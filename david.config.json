@@ -1,0 +1,108 @@
+{
+  "user": {
+    "name": "David Bond",
+    "githubUsername": "davidnmbond",
+    "email": "david@davidbond.net"
+  },
+  "repository": {
+    "owner": "davidnmbond",
+    "name": "JustHowILikeIt",
+    "clonePath": "%USERPROFILE%\\JustHowILikeIt"
+  },
+  "ohMyPosh": {
+    "theme": "marcduiker",
+    "enabled": true
+  },
+  "tools": [
+    {
+      "id": "Microsoft.PowerShell",
+      "name": "PowerShell Core",
+      "category": "CORE TERMINAL & SHELL"
+    },
+    {
+      "id": "JanDeDobbeleer.OhMyPosh",
+      "name": "Oh My Posh",
+      "category": "CORE TERMINAL & SHELL"
+    },
+    {
+      "id": "Microsoft.VisualStudio.2026.Professional",
+      "name": "Visual Studio 2026 Professional",
+      "category": "IDEs & EDITORS"
+    },
+    {
+      "id": "Microsoft.VisualStudioCode",
+      "name": "VS Code",
+      "category": "IDEs & EDITORS"
+    },
+    {
+      "id": "Notepad++.Notepad++",
+      "name": "Notepad++",
+      "category": "IDEs & EDITORS"
+    },
+    {
+      "id": "Git.Git",
+      "name": "Git",
+      "category": "SOURCE CONTROL & CLI"
+    },
+    {
+      "id": "GitHub.cli",
+      "name": "GitHub CLI",
+      "category": "SOURCE CONTROL & CLI"
+    },
+    {
+      "id": "OpenJS.NodeJS",
+      "name": "Node.js",
+      "category": "LANGUAGES & RUNTIMES"
+    },
+    {
+      "id": "Microsoft.WSL",
+      "name": "Windows Subsystem for Linux",
+      "category": "LANGUAGES & RUNTIMES"
+    },
+    {
+      "id": "Mozilla.Firefox",
+      "name": "Firefox",
+      "category": "BROWSERS"
+    },
+    {
+      "id": "Google.Chrome",
+      "name": "Chrome",
+      "category": "BROWSERS"
+    },
+    {
+      "id": "KeePassXCTeam.KeePassXC",
+      "name": "KeePassXC",
+      "category": "UTILITIES"
+    },
+    {
+      "id": "Docker.DockerDesktop",
+      "name": "Docker Desktop",
+      "category": "UTILITIES"
+    },
+    {
+      "id": "Postman.Postman",
+      "name": "Postman",
+      "category": "UTILITIES"
+    },
+    {
+      "id": "Microsoft.PowerToys",
+      "name": "PowerToys",
+      "category": "UTILITIES"
+    },
+    {
+      "id": "7zip.7zip",
+      "name": "7-Zip",
+      "category": "UTILITIES"
+    },
+    {
+      "id": "Microsoft.VCRedist.2015+.x64",
+      "name": "Microsoft Visual C++ Redistributable",
+      "category": "UTILITIES"
+    },
+    {
+      "id": "ShareX.ShareX",
+      "name": "ShareX",
+      "category": "UTILITIES"
+    }
+  ]
+}
