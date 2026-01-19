@@ -13,6 +13,23 @@
     "theme": "marcduiker",
     "enabled": true
   },
+  "fonts": {
+    "nerdFont": "CascadiaCode",
+    "terminalFontName": "CaskaydiaCove NF",
+    "configureVSCode": true,
+    "configureWindowsTerminal": true
+  },
+  "windowsSettings": {
+    "showFileExtensions": true,
+    "showHiddenFiles": false,
+    "darkMode": true,
+    "desktopWallpaper": "C:\\Windows\\Web\\Wallpaper\\Windows\\img0.jpg",
+    "taskbar": {
+      "alignment": "left",
+      "showWidgets": false,
+      "showSearch": false
+    }
+  },
   "tools": [
     {
       "id": "Microsoft.PowerShell",
@@ -23,11 +40,6 @@
       "id": "JanDeDobbeleer.OhMyPosh",
       "name": "Oh My Posh",
       "category": "CORE TERMINAL & SHELL"
-    },
-    {
-      "id": "Microsoft.VisualStudio.2026.Professional",
-      "name": "Visual Studio 2026 Professional",
-      "category": "IDEs & EDITORS"
     },
     {
       "id": "Microsoft.VisualStudioCode",
@@ -50,9 +62,34 @@
       "category": "SOURCE CONTROL & CLI"
     },
     {
+      "id": "GitHub.Copilot",
+      "name": "GitHub Copilot CLI",
+      "category": "SOURCE CONTROL & CLI"
+    },
+    {
+      "id": "Microsoft.AzureCLI",
+      "name": "Azure CLI",
+      "category": "CLOUD & INFRASTRUCTURE"
+    },
+    {
+      "id": "Amazon.AWSCLI",
+      "name": "AWS CLI",
+      "category": "CLOUD & INFRASTRUCTURE"
+    },
+    {
       "id": "OpenJS.NodeJS",
       "name": "Node.js",
       "category": "LANGUAGES & RUNTIMES"
+    },
+    {
+      "id": "Microsoft.DotNet.SDK.10",
+      "name": ".NET SDK 10.0",
+      "category": "LANGUAGES & RUNTIMES"
+    },
+    {
+      "id": "Ollama.Ollama",
+      "name": "Ollama",
+      "category": "AI & ML"
     },
     {
       "id": "Microsoft.WSL",
@@ -68,6 +105,16 @@
       "id": "Google.Chrome",
       "name": "Chrome",
       "category": "BROWSERS"
+    },
+    {
+      "id": "Microsoft.Teams",
+      "name": "Microsoft Teams",
+      "category": "COMMUNICATION"
+    },
+    {
+      "id": "SlackTechnologies.Slack",
+      "name": "Slack",
+      "category": "COMMUNICATION"
     },
     {
       "id": "KeePassXCTeam.KeePassXC",
@@ -103,6 +150,46 @@
       "id": "ShareX.ShareX",
       "name": "ShareX",
       "category": "UTILITIES"
+    }
+  ],
+  "dotnetTools": [
+    {
+      "id": "dotnet-ef",
+      "name": "Entity Framework Core Tools"
+    },
+    {
+      "id": "nbgv",
+      "name": "Nerdbank.GitVersioning CLI"
+    }
+  ],
+  "firefoxExtensions": [
+    {
+      "id": "uBlock0@raymondhill.net",
+      "name": "uBlock Origin",
+      "url": "https://addons.mozilla.org/firefox/downloads/latest/ublock-origin/latest.xpi"
+    },
+    {
+      "id": "jid1-MnnxcxisBPnSXQ@jetpack",
+      "name": "Privacy Badger",
+      "url": "https://addons.mozilla.org/firefox/downloads/latest/privacy-badger17/latest.xpi"
+    }
+  ],
+  "dockerImages": [
+    {
+      "image": "mcr.microsoft.com/mssql/server",
+      "tag": "2022-latest",
+      "name": "SQL Server 2022"
+    }
+  ],
+  "backups": [
+    {
+      "enabled": true,
+      "type": "WindowsBackup"
+    },
+    {
+      "enabled": true,
+      "type": "BitLockerKeys",
+      "destinationPath": "%USERPROFILE%\\OneDrive\\Bitlocker"
     }
   ]
 }

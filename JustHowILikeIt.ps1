@@ -131,6 +131,9 @@ function Get-CachedStatus {
             Repository = $cache.Repository
             FirefoxExtensions = @()
             DockerImages = @()
+            DotnetTools = @()
+            Backups = @()
+            WindowsSettings = $cache.WindowsSettings
             LastUpdated = $cache.LastUpdated
         }
         
@@ -189,6 +192,8 @@ function Save-StatusToCache {
         Repository = $Status.Repository
         FirefoxExtensions = $Status.FirefoxExtensions
         DockerImages = $Status.DockerImages
+        DotnetTools = $Status.DotnetTools
+        WindowsSettings = $Status.WindowsSettings
     }
     
     $cacheData | ConvertTo-Json -Depth 10 | Set-Content $script:CacheFile -Force
@@ -240,6 +245,8 @@ function Get-PreFlightStatus {
         Repository = $null
         FirefoxExtensions = @()
         DockerImages = @()
+        Backups = @()
+        WindowsSettings = $null
     }
     
     if (-not $Silent) {
@@ -247,9 +254,11 @@ function Get-PreFlightStatus {
     }
     
     $firefoxExtCount = if ($Configuration.firefoxExtensions) { 1 } else { 0 }
-    $fontCheck = if ($Configuration.ohMyPosh.font) { 1 } else { 0 }
+    $fontCheck = if ($Configuration.fonts.nerdFont -or $Configuration.ohMyPosh.font) { 1 } else { 0 }
     $dockerCheck = if ($Configuration.dockerImages) { 1 } else { 0 }
-    $totalChecks = $Configuration.tools.Count + 3 + $firefoxExtCount + $fontCheck + $dockerCheck  # tools + gh + posh + repo + firefox + font + docker
+    $backupCheck = if ($Configuration.backups) { 1 } else { 0 }
+    $windowsSettingsCheck = if ($Configuration.windowsSettings) { 1 } else { 0 }
+    $totalChecks = $Configuration.tools.Count + 3 + $firefoxExtCount + $fontCheck + $dockerCheck + $backupCheck + $windowsSettingsCheck
     $currentCheck = 0
     
     # Check each tool with progress bar
@@ -324,8 +333,9 @@ function Get-PreFlightStatus {
             }
         }
         
-        # Check Nerd Font
-        $fontName = $Configuration.ohMyPosh.font
+        # Check Nerd Font (now from fonts config section)
+        $fontName = if ($Configuration.fonts.nerdFont) { $Configuration.fonts.nerdFont } else { $Configuration.ohMyPosh.font }
+        $terminalFontName = if ($Configuration.fonts.terminalFontName) { $Configuration.fonts.terminalFontName } else { "$fontName NF" }
         if ($fontName) {
             $currentCheck++
             Write-Progress -Activity "Pre-flight checks" -Status "Checking Nerd Font..." -PercentComplete ([int](($currentCheck / $totalChecks) * 100))
@@ -345,8 +355,21 @@ function Get-PreFlightStatus {
                 try {
                     Add-Type -AssemblyName System.Drawing
                     $fonts = (New-Object System.Drawing.Text.InstalledFontCollection).Families
-                    $fontInstalled = ($fonts | Where-Object { $_.Name -match $fontName }).Count -gt 0
+                    $fontInstalled = ($fonts | Where-Object { $_.Name -match $fontName -or $_.Name -eq $terminalFontName }).Count -gt 0
                 } catch {}
+            }
+            # Also check if Windows Terminal is already configured with this font
+            if (-not $fontInstalled) {
+                $wtSettingsPath = "$env:LOCALAPPDATA\Packages\Microsoft.WindowsTerminal_8wekyb3d8bbwe\LocalState\settings.json"
+                if (Test-Path $wtSettingsPath) {
+                    try {
+                        $wtSettings = Get-Content $wtSettingsPath -Raw | ConvertFrom-Json
+                        $wtFont = $wtSettings.profiles.defaults.font.face
+                        if ($wtFont -eq $terminalFontName) {
+                            $fontInstalled = $true
+                        }
+                    } catch {}
+                }
             }
             # Also check if VS Code is already configured with this font (means it was installed)
             if (-not $fontInstalled) {
@@ -355,7 +378,7 @@ function Get-PreFlightStatus {
                     try {
                         $vscodeSettings = Get-Content $vscodeSettingsPath -Raw | ConvertFrom-Json
                         $terminalFont = $vscodeSettings.'terminal.integrated.fontFamily'
-                        if ($terminalFont -match $fontName) {
+                        if ($terminalFont -match $fontName -or $terminalFont -eq $terminalFontName) {
                             $fontInstalled = $true
                         }
                     } catch {}
@@ -457,6 +480,218 @@ function Get-PreFlightStatus {
         }
     }
     
+    # Check Dotnet Tools
+    if ($Configuration.dotnetTools -and $Configuration.dotnetTools.Count -gt 0) {
+        $currentCheck++
+        Write-Progress -Activity "Pre-flight checks" -Status "Checking dotnet tools..." -PercentComplete ([int](($currentCheck / $totalChecks) * 100))
+        
+        $dotnetAvailable = Get-Command dotnet -ErrorAction SilentlyContinue
+        if ($dotnetAvailable) {
+            $installedTools = dotnet tool list --global 2>$null | Select-Object -Skip 2 | ForEach-Object { ($_ -split '\s+')[0].ToLower() }
+            
+            foreach ($tool in $Configuration.dotnetTools) {
+                $isInstalled = $installedTools -contains $tool.id.ToLower()
+                
+                $status.DotnetTools += [PSCustomObject]@{
+                    Name = $tool.name
+                    Id = $tool.id
+                    Installed = $isInstalled
+                    Action = if ($isInstalled) { "Skip" } else { "Install" }
+                }
+            }
+        } else {
+            foreach ($tool in $Configuration.dotnetTools) {
+                $status.DotnetTools += [PSCustomObject]@{
+                    Name = $tool.name
+                    Id = $tool.id
+                    Installed = $false
+                    Action = "Dotnet not available"
+                }
+            }
+        }
+    }
+    
+    # Check Backup configuration
+    $currentCheck++
+    Write-Progress -Activity "Pre-flight checks" -Status "Checking backup configuration..." -PercentComplete ([int](($currentCheck / $totalChecks) * 100))
+    
+    if ($Configuration.backups -and $Configuration.backups.Count -gt 0) {
+        foreach ($backup in $Configuration.backups) {
+            if (-not $backup.enabled) {
+                $status.Backups += [PSCustomObject]@{
+                    Type = if ($backup.type) { $backup.type } else { "FileHistory" }
+                    Destination = $backup.destinationPath
+                    Configured = $false
+                    Action = "Disabled"
+                }
+                continue
+            }
+            
+            $backupType = if ($backup.type) { $backup.type } else { "FileHistory" }
+            $isConfigured = $false
+            
+            if ($backupType -eq "FileHistory") {
+                try {
+                    $fhConfig = Get-CimInstance -Namespace root/Microsoft/Windows/FileHistory -ClassName MSFT_FhConfigInfo -ErrorAction Stop
+                    $isConfigured = ($fhConfig.BackupLocation -eq $backup.destinationPath -and $fhConfig.Enabled)
+                } catch {
+                    # Fallback: check if FileHistory config folder exists in the destination
+                    $fhConfigPath = Join-Path $backup.destinationPath "Configuration"
+                    $isConfigured = (Test-Path $fhConfigPath)
+                }
+            } elseif ($backupType -eq "BitLockerKeys") {
+                # Check if we have a backup from today
+                if (Test-Path $backup.destinationPath) {
+                    $todayFiles = Get-ChildItem -Path $backup.destinationPath -Filter "BitLocker-$env:COMPUTERNAME-*-$(Get-Date -Format 'yyyy-MM-dd').txt" -ErrorAction SilentlyContinue
+                    $isConfigured = ($todayFiles.Count -gt 0)
+                }
+            } elseif ($backupType -eq "WindowsBackup") {
+                # Check if Windows Backup is enabled via registry
+                try {
+                    $wbReg = Get-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\AppListBackup" -ErrorAction Stop
+                    $isConfigured = ($wbReg.IsBackupEnabledAndMSAAttached -eq 1)
+                } catch {
+                    $isConfigured = $false
+                }
+            }
+            
+            $status.Backups += [PSCustomObject]@{
+                Type = $backupType
+                Destination = $backup.destinationPath
+                Configured = $isConfigured
+                Action = if ($isConfigured) { "Skip" } else { "Configure" }
+            }
+        }
+    }
+    
+    # Check Windows Settings (File Explorer preferences)
+    if ($Configuration.windowsSettings) {
+        $currentCheck++
+        Write-Progress -Activity "Pre-flight checks" -Status "Checking Windows settings..." -PercentComplete ([int][Math]::Min(($currentCheck / $totalChecks) * 100, 100))
+        
+        $wsStatus = @{}
+        
+        # Check file extensions visibility
+        if ($null -ne $Configuration.windowsSettings.showFileExtensions) {
+            try {
+                $hideExt = Get-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" -Name "HideFileExt" -ErrorAction Stop
+                $currentlyShowing = ($hideExt.HideFileExt -eq 0)
+                $wsStatus.ShowFileExtensions = [PSCustomObject]@{
+                    Desired = $Configuration.windowsSettings.showFileExtensions
+                    Current = $currentlyShowing
+                    Configured = ($currentlyShowing -eq $Configuration.windowsSettings.showFileExtensions)
+                }
+            } catch {
+                $wsStatus.ShowFileExtensions = [PSCustomObject]@{
+                    Desired = $Configuration.windowsSettings.showFileExtensions
+                    Current = $null
+                    Configured = $false
+                }
+            }
+        }
+        
+        # Check hidden files visibility
+        if ($null -ne $Configuration.windowsSettings.showHiddenFiles) {
+            try {
+                $hidden = Get-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" -Name "Hidden" -ErrorAction Stop
+                $currentlyShowing = ($hidden.Hidden -eq 1)
+                $wsStatus.ShowHiddenFiles = [PSCustomObject]@{
+                    Desired = $Configuration.windowsSettings.showHiddenFiles
+                    Current = $currentlyShowing
+                    Configured = ($currentlyShowing -eq $Configuration.windowsSettings.showHiddenFiles)
+                }
+            } catch {
+                $wsStatus.ShowHiddenFiles = [PSCustomObject]@{
+                    Desired = $Configuration.windowsSettings.showHiddenFiles
+                    Current = $null
+                    Configured = $false
+                }
+            }
+        }
+        
+        # Check dark mode
+        if ($null -ne $Configuration.windowsSettings.darkMode) {
+            try {
+                $theme = Get-ItemProperty "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Themes\Personalize" -ErrorAction Stop
+                $currentDarkMode = ($theme.AppsUseLightTheme -eq 0 -and $theme.SystemUsesLightTheme -eq 0)
+                $wsStatus.DarkMode = [PSCustomObject]@{
+                    Desired = $Configuration.windowsSettings.darkMode
+                    Current = $currentDarkMode
+                    Configured = ($currentDarkMode -eq $Configuration.windowsSettings.darkMode)
+                }
+            } catch {
+                $wsStatus.DarkMode = [PSCustomObject]@{
+                    Desired = $Configuration.windowsSettings.darkMode
+                    Current = $null
+                    Configured = $false
+                }
+            }
+        }
+        
+        # Check desktop wallpaper
+        if ($Configuration.windowsSettings.desktopWallpaper) {
+            try {
+                $currentWallpaper = (Get-ItemProperty "HKCU:\Control Panel\Desktop" -Name Wallpaper -ErrorAction Stop).Wallpaper
+                $desiredWallpaper = $Configuration.windowsSettings.desktopWallpaper
+                $wsStatus.DesktopWallpaper = [PSCustomObject]@{
+                    Desired = $desiredWallpaper
+                    Current = $currentWallpaper
+                    Configured = ($currentWallpaper -eq $desiredWallpaper)
+                }
+            } catch {
+                $wsStatus.DesktopWallpaper = [PSCustomObject]@{
+                    Desired = $Configuration.windowsSettings.desktopWallpaper
+                    Current = $null
+                    Configured = $false
+                }
+            }
+        }
+        
+        # Check taskbar settings
+        if ($Configuration.windowsSettings.taskbar) {
+            $taskbarStatus = @{}
+            $advancedReg = Get-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" -ErrorAction SilentlyContinue
+            $searchReg = Get-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Search" -ErrorAction SilentlyContinue
+            
+            # Taskbar alignment (left=0, center=1)
+            if ($null -ne $Configuration.windowsSettings.taskbar.alignment) {
+                $desiredAlign = if ($Configuration.windowsSettings.taskbar.alignment -eq "left") { 0 } else { 1 }
+                $currentAlign = $advancedReg.TaskbarAl
+                $taskbarStatus.Alignment = [PSCustomObject]@{
+                    Desired = $Configuration.windowsSettings.taskbar.alignment
+                    Current = if ($currentAlign -eq 0) { "left" } else { "center" }
+                    Configured = ($currentAlign -eq $desiredAlign)
+                }
+            }
+            
+            # Widgets (show=1, hide=0)
+            if ($null -ne $Configuration.windowsSettings.taskbar.showWidgets) {
+                $desiredWidgets = if ($Configuration.windowsSettings.taskbar.showWidgets) { 1 } else { 0 }
+                $currentWidgets = $advancedReg.TaskbarDa
+                $taskbarStatus.ShowWidgets = [PSCustomObject]@{
+                    Desired = $Configuration.windowsSettings.taskbar.showWidgets
+                    Current = ($currentWidgets -eq 1)
+                    Configured = ($currentWidgets -eq $desiredWidgets)
+                }
+            }
+            
+            # Search (hidden=0, icon=1, box=2)
+            if ($null -ne $Configuration.windowsSettings.taskbar.showSearch) {
+                $desiredSearch = if ($Configuration.windowsSettings.taskbar.showSearch) { 1 } else { 0 }
+                $currentSearch = $searchReg.SearchboxTaskbarMode
+                $taskbarStatus.ShowSearch = [PSCustomObject]@{
+                    Desired = $Configuration.windowsSettings.taskbar.showSearch
+                    Current = ($currentSearch -gt 0)
+                    Configured = (($currentSearch -gt 0) -eq $Configuration.windowsSettings.taskbar.showSearch)
+                }
+            }
+            
+            $wsStatus.Taskbar = $taskbarStatus
+        }
+        
+        $status.WindowsSettings = $wsStatus
+    }
+    
     Write-Progress -Activity "Pre-flight checks" -Completed
     
     return $status
@@ -541,6 +776,86 @@ function Show-PreFlightStatus {
             Write-Host " (to pull: $imgNames)" -ForegroundColor Cyan
         } else {
             Write-Host ""
+        }
+    }
+    
+    # Dotnet Tools status - one line
+    if ($Status.DotnetTools -and $Status.DotnetTools.Count -gt 0) {
+        $toolsToInstall = ($Status.DotnetTools | Where-Object { -not $_.Installed }).Count
+        $toolsInstalled = ($Status.DotnetTools | Where-Object { $_.Installed }).Count
+        $toolsColor = if ($toolsToInstall -gt 0) { 'Yellow' } else { 'Green' }
+        Write-Host "🔧 Dotnet Tools: $toolsInstalled/$($Status.DotnetTools.Count) installed" -ForegroundColor $toolsColor -NoNewline
+        if ($toolsToInstall -gt 0) {
+            $toolNames = ($Status.DotnetTools | Where-Object { -not $_.Installed } | ForEach-Object { $_.Name }) -join ", "
+            Write-Host " (to install: $toolNames)" -ForegroundColor Cyan
+        } else {
+            Write-Host ""
+        }
+    }
+    
+    # Backup status - one line
+    if ($Status.Backups -and $Status.Backups.Count -gt 0) {
+        $backupsToConfig = ($Status.Backups | Where-Object { $_.Action -eq "Configure" }).Count
+        $backupsConfigured = ($Status.Backups | Where-Object { $_.Configured }).Count
+        $backupsDisabled = ($Status.Backups | Where-Object { $_.Action -eq "Disabled" }).Count
+        $backupColor = if ($backupsToConfig -gt 0) { 'Yellow' } else { 'Green' }
+        Write-Host "💾 Backups: $backupsConfigured/$($Status.Backups.Count - $backupsDisabled) configured" -ForegroundColor $backupColor -NoNewline
+        if ($backupsDisabled -gt 0) {
+            Write-Host " ($backupsDisabled disabled)" -ForegroundColor Gray -NoNewline
+        }
+        if ($backupsToConfig -gt 0) {
+            Write-Host " (to configure: $backupsToConfig)" -ForegroundColor Cyan
+        } else {
+            Write-Host ""
+        }
+    }
+    
+    # Windows Settings status - one line
+    if ($Status.WindowsSettings) {
+        $settingsToFix = 0
+        $settingsOk = 0
+        $details = @()
+        
+        if ($Status.WindowsSettings.ShowFileExtensions) {
+            if ($Status.WindowsSettings.ShowFileExtensions.Configured) { $settingsOk++ } 
+            else { $settingsToFix++; $details += "file extensions" }
+        }
+        if ($Status.WindowsSettings.ShowHiddenFiles) {
+            if ($Status.WindowsSettings.ShowHiddenFiles.Configured) { $settingsOk++ } 
+            else { $settingsToFix++; $details += "hidden files" }
+        }
+        if ($Status.WindowsSettings.DarkMode) {
+            if ($Status.WindowsSettings.DarkMode.Configured) { $settingsOk++ } 
+            else { $settingsToFix++; $details += "dark mode" }
+        }
+        if ($Status.WindowsSettings.DesktopWallpaper) {
+            if ($Status.WindowsSettings.DesktopWallpaper.Configured) { $settingsOk++ } 
+            else { $settingsToFix++; $details += "wallpaper" }
+        }
+        if ($Status.WindowsSettings.Taskbar) {
+            if ($Status.WindowsSettings.Taskbar.Alignment) {
+                if ($Status.WindowsSettings.Taskbar.Alignment.Configured) { $settingsOk++ } 
+                else { $settingsToFix++; $details += "taskbar alignment" }
+            }
+            if ($Status.WindowsSettings.Taskbar.ShowWidgets) {
+                if ($Status.WindowsSettings.Taskbar.ShowWidgets.Configured) { $settingsOk++ } 
+                else { $settingsToFix++; $details += "widgets" }
+            }
+            if ($Status.WindowsSettings.Taskbar.ShowSearch) {
+                if ($Status.WindowsSettings.Taskbar.ShowSearch.Configured) { $settingsOk++ } 
+                else { $settingsToFix++; $details += "search" }
+            }
+        }
+        
+        $total = $settingsOk + $settingsToFix
+        if ($total -gt 0) {
+            $wsColor = if ($settingsToFix -gt 0) { 'Yellow' } else { 'Green' }
+            Write-Host "⚙️ Windows Settings: $settingsOk/$total configured" -ForegroundColor $wsColor -NoNewline
+            if ($settingsToFix -gt 0) {
+                Write-Host " (to fix: $($details -join ', '))" -ForegroundColor Cyan
+            } else {
+                Write-Host ""
+            }
         }
     }
     
@@ -697,12 +1012,29 @@ function Install-Tools {
 
             $profileContent = if (Test-Path $PROFILE) { Get-Content $PROFILE -Raw } else { "" }
             
-            if (-not ($profileContent -match [regex]::Escape($poshInitLine))) {
+            # Check if any oh-my-posh init line exists
+            $hasOhMyPosh = $profileContent -match 'oh-my-posh init pwsh'
+            $hasCorrectLine = $profileContent -match [regex]::Escape($poshInitLine)
+            
+            if (-not $hasCorrectLine) {
                 if ($IsDryRun) {
-                    Write-Host " • [DRY RUN] Would add $themeName theme to profile" -ForegroundColor Cyan
+                    Write-Host " • [DRY RUN] Would configure $themeName theme in profile" -ForegroundColor Cyan
                 } else {
                     Write-Host " • Adding $themeName theme to profile..." -ForegroundColor Green -NoNewline
-                    Add-Content -Path $PROFILE -Value "`n# Oh My Posh Configuration`n$poshInitLine"
+                    if ($hasOhMyPosh) {
+                        # Replace existing oh-my-posh lines and associated comments with the correct one
+                        $newContent = $profileContent -replace '(?m)^#\s*Oh My Posh.*$\r?\n?', ''
+                        $newContent = $newContent -replace '(?m)^.*oh-my-posh init pwsh.*$\r?\n?', ''
+                        $newContent = $newContent.Trim()
+                        if ($newContent) {
+                            $newContent = "$newContent`n`n# Oh My Posh Configuration`n$poshInitLine"
+                        } else {
+                            $newContent = "# Oh My Posh Configuration`n$poshInitLine"
+                        }
+                        Set-Content -Path $PROFILE -Value $newContent -Force
+                    } else {
+                        Add-Content -Path $PROFILE -Value "`n# Oh My Posh Configuration`n$poshInitLine"
+                    }
                     Write-Host " ✓" -ForegroundColor Green
                 }
             }
@@ -712,14 +1044,15 @@ function Install-Tools {
     # --- Nerd Font Installation ---
     if ($PreFlightStatus.NerdFont -and $PreFlightStatus.NerdFont.Action -ne "Skip") {
         Write-Host "`n=== Nerd Font Installation ===" -ForegroundColor Cyan
-        $fontName = $Configuration.ohMyPosh.font
+        $fontName = $Configuration.fonts.nerdFont
+        $terminalFontName = if ($Configuration.fonts.terminalFontName) { $Configuration.fonts.terminalFontName } else { "$fontName NF" }
         if ($fontName) {
             if ($IsDryRun) {
                 Write-Host " • [DRY RUN] Would install $fontName Nerd Font" -ForegroundColor Cyan
             } else {
                 Write-Host " • Installing $fontName Nerd Font..." -ForegroundColor Green -NoNewline
                 try {
-                    $result = & oh-my-posh font install $fontName --headless 2>&1
+                    $result = & oh-my-posh font install $fontName 2>&1
                     Write-Host " ✓" -ForegroundColor Green
                 }
                 catch {
@@ -729,20 +1062,53 @@ function Install-Tools {
             }
             
             # Configure VS Code terminal font
-            $vscodeSettingsPath = "$env:APPDATA\Code\User\settings.json"
-            if (Test-Path $vscodeSettingsPath) {
-                $vscodeSettings = Get-Content $vscodeSettingsPath -Raw | ConvertFrom-Json
-                $fontFamily = "$fontName Nerd Font"
-                $currentFont = $vscodeSettings.'terminal.integrated.fontFamily'
-                
-                if ($currentFont -ne $fontFamily) {
-                    if ($IsDryRun) {
-                        Write-Host " • [DRY RUN] Would set VS Code terminal font to '$fontFamily'" -ForegroundColor Cyan
-                    } else {
-                        Write-Host " • Setting VS Code terminal font..." -ForegroundColor Green -NoNewline
-                        $vscodeSettings | Add-Member -NotePropertyName 'terminal.integrated.fontFamily' -NotePropertyValue $fontFamily -Force
-                        $vscodeSettings | ConvertTo-Json -Depth 10 | Set-Content $vscodeSettingsPath -Encoding UTF8
-                        Write-Host " ✓" -ForegroundColor Green
+            if ($Configuration.fonts.configureVSCode -ne $false) {
+                $vscodeSettingsPath = "$env:APPDATA\Code\User\settings.json"
+                if (Test-Path $vscodeSettingsPath) {
+                    $vscodeSettings = Get-Content $vscodeSettingsPath -Raw | ConvertFrom-Json
+                    $currentFont = $vscodeSettings.'terminal.integrated.fontFamily'
+                    
+                    if ($currentFont -ne $terminalFontName) {
+                        if ($IsDryRun) {
+                            Write-Host " • [DRY RUN] Would set VS Code terminal font to '$terminalFontName'" -ForegroundColor Cyan
+                        } else {
+                            Write-Host " • Setting VS Code terminal font..." -ForegroundColor Green -NoNewline
+                            $vscodeSettings | Add-Member -NotePropertyName 'terminal.integrated.fontFamily' -NotePropertyValue $terminalFontName -Force
+                            $vscodeSettings | ConvertTo-Json -Depth 10 | Set-Content $vscodeSettingsPath -Encoding UTF8
+                            Write-Host " ✓" -ForegroundColor Green
+                        }
+                    }
+                }
+            }
+            
+            # Configure Windows Terminal font
+            if ($Configuration.fonts.configureWindowsTerminal -ne $false) {
+                $wtSettingsPath = "$env:LOCALAPPDATA\Packages\Microsoft.WindowsTerminal_8wekyb3d8bbwe\LocalState\settings.json"
+                if (Test-Path $wtSettingsPath) {
+                    try {
+                        $wtSettings = Get-Content $wtSettingsPath -Raw | ConvertFrom-Json
+                        $currentWtFont = $wtSettings.profiles.defaults.font.face
+                        
+                        if ($currentWtFont -ne $terminalFontName) {
+                            if ($IsDryRun) {
+                                Write-Host " • [DRY RUN] Would set Windows Terminal font to '$terminalFontName'" -ForegroundColor Cyan
+                            } else {
+                                Write-Host " • Setting Windows Terminal font..." -ForegroundColor Green -NoNewline
+                                if (-not $wtSettings.profiles.defaults) {
+                                    $wtSettings.profiles | Add-Member -NotePropertyName 'defaults' -NotePropertyValue @{} -Force
+                                }
+                                if (-not $wtSettings.profiles.defaults.font) {
+                                    $wtSettings.profiles.defaults | Add-Member -NotePropertyName 'font' -NotePropertyValue @{} -Force
+                                }
+                                $wtSettings.profiles.defaults.font | Add-Member -NotePropertyName 'face' -NotePropertyValue $terminalFontName -Force
+                                $wtSettings | ConvertTo-Json -Depth 10 | Set-Content $wtSettingsPath -Encoding UTF8
+                                Write-Host " ✓" -ForegroundColor Green
+                            }
+                        } else {
+                            Write-Host " • Windows Terminal font already set to '$terminalFontName'" -ForegroundColor Gray
+                        }
+                    } catch {
+                        Write-Host " • Could not configure Windows Terminal: $_" -ForegroundColor Yellow
                     }
                 }
             }
@@ -771,12 +1137,14 @@ function Install-Tools {
                     }
                 }
                 
+                $anyNewlyInstalled = $false
                 foreach ($ext in $Configuration.firefoxExtensions) {
                     $extFile = Join-Path $extensionsDir "$($ext.id).xpi"
                     
                     if (Test-Path $extFile) {
                         Write-Host " • $($ext.name) already installed" -ForegroundColor Gray
                     } else {
+                        $anyNewlyInstalled = $true
                         if ($IsDryRun) {
                             Write-Host " • [DRY RUN] Would install $($ext.name)" -ForegroundColor Cyan
                         } else {
@@ -791,7 +1159,9 @@ function Install-Tools {
                     }
                 }
                 
-                Write-Host " ! Restart Firefox to activate extensions" -ForegroundColor Yellow
+                if ($anyNewlyInstalled) {
+                    Write-Host " ! Restart Firefox to activate extensions" -ForegroundColor Yellow
+                }
             } else {
                 Write-Host " ! No Firefox profile found. Run Firefox once first." -ForegroundColor Yellow
             }
@@ -833,6 +1203,362 @@ function Install-Tools {
         }
     }
 
+    # --- Dotnet Tools ---
+    if ($Configuration.dotnetTools -and $Configuration.dotnetTools.Count -gt 0) {
+        Write-Host "`n=== Dotnet Tools ===" -ForegroundColor Cyan
+        
+        $dotnetAvailable = Get-Command dotnet -ErrorAction SilentlyContinue
+        if ($dotnetAvailable) {
+            foreach ($tool in $Configuration.dotnetTools) {
+                $toolStatus = $PreFlightStatus.DotnetTools | Where-Object { $_.Id -eq $tool.id }
+                
+                if ($toolStatus -and $toolStatus.Installed) {
+                    Write-Host " • $($tool.name) already installed" -ForegroundColor Gray
+                } else {
+                    if ($IsDryRun) {
+                        Write-Host " • [DRY RUN] Would install $($tool.id)" -ForegroundColor Cyan
+                    } else {
+                        Write-Host " • Installing $($tool.name)..." -ForegroundColor Green -NoNewline
+                        $installResult = dotnet tool install --global $tool.id 2>&1
+                        if ($LASTEXITCODE -eq 0) {
+                            Write-Host " ✓" -ForegroundColor Green
+                        } else {
+                            Write-Host " ✗" -ForegroundColor Red
+                            Write-Host "   Error: $installResult" -ForegroundColor Red
+                        }
+                    }
+                }
+            }
+        } else {
+            Write-Host " ! .NET SDK is not available. Install .NET SDK first." -ForegroundColor Yellow
+        }
+    }
+
+    # --- Backup Configuration ---
+    if ($Configuration.backups -and $Configuration.backups.Count -gt 0) {
+        Write-Host "`n=== Backup Configuration ===" -ForegroundColor Cyan
+        
+        foreach ($backup in $Configuration.backups) {
+            if (-not $backup.enabled) {
+                Write-Host " • Backup → $($backup.destinationPath) [DISABLED]" -ForegroundColor Gray
+                continue
+            }
+
+            $backupType = if ($backup.type) { $backup.type } else { "FileHistory" }
+            
+            # Check pre-flight status to skip already configured backups
+            $backupStatus = $PreFlightStatus.Backups | Where-Object { $_.Type -eq $backupType -and $_.Destination -eq $backup.destinationPath }
+            if ($backupStatus -and $backupStatus.Configured) {
+                Write-Host " • $backupType → $($backup.destinationPath) [Already configured]" -ForegroundColor Gray
+                continue
+            }
+            
+            Write-Host " • Configuring $backupType → $($backup.destinationPath)" -ForegroundColor Green
+            
+            if ($backupType -eq "FileHistory") {
+                # Check destination drive exists and has adequate space
+                $destDrive = Split-Path -Qualifier $backup.destinationPath
+                if (-not (Test-Path $destDrive)) {
+                    Write-Host "   ✗ Destination drive $destDrive not found - skipping" -ForegroundColor Red
+                    continue
+                }
+                
+                $minSpaceGB = if ($backup.minFreeSpaceGB) { $backup.minFreeSpaceGB } else { 50 }
+                $driveInfo = Get-PSDrive -Name ($destDrive -replace ':', '') -ErrorAction SilentlyContinue
+                if ($driveInfo) {
+                    $freeSpaceGB = [math]::Round($driveInfo.Free / 1GB, 1)
+                    if ($freeSpaceGB -lt $minSpaceGB) {
+                        Write-Host "   ⚠ Warning: Only ${freeSpaceGB}GB free on $destDrive (minimum: ${minSpaceGB}GB)" -ForegroundColor Yellow
+                    } else {
+                        Write-Host "   ✓ ${freeSpaceGB}GB free on $destDrive" -ForegroundColor Gray
+                    }
+                }
+                
+                # Ensure destination directory exists
+                if (-not (Test-Path $backup.destinationPath)) {
+                    if ($IsDryRun) {
+                        Write-Host "   [DRY RUN] Would create directory: $($backup.destinationPath)" -ForegroundColor Cyan
+                    } else {
+                        Write-Host "   Creating backup directory..." -ForegroundColor Yellow
+                        New-Item -ItemType Directory -Path $backup.destinationPath -Force | Out-Null
+                    }
+                }
+
+                # Check if File History has data in the destination (Configuration folder exists)
+                $fhConfigPath = Join-Path $backup.destinationPath "Configuration"
+                if (Test-Path $fhConfigPath) {
+                    Write-Host "   ✓ File History already configured to $($backup.destinationPath)" -ForegroundColor Gray
+                } else {
+                    if ($IsDryRun) {
+                        Write-Host "   [DRY RUN] Would open File History settings" -ForegroundColor Cyan
+                    } else {
+                        Write-Host "   ⚠ File History needs manual configuration" -ForegroundColor Yellow
+                        Write-Host "   → Opening Backup Settings... (select '$($backup.destinationPath)' as backup drive)" -ForegroundColor Cyan
+                        Start-Process "ms-settings:backup"
+                    }
+                }
+            } elseif ($backupType -eq "BitLockerKeys") {
+                # Backup BitLocker recovery keys
+                if (-not (Test-Path $backup.destinationPath)) {
+                    if ($IsDryRun) {
+                        Write-Host "   [DRY RUN] Would create directory: $($backup.destinationPath)" -ForegroundColor Cyan
+                    } else {
+                        Write-Host "   Creating backup directory..." -ForegroundColor Yellow
+                        New-Item -ItemType Directory -Path $backup.destinationPath -Force | Out-Null
+                    }
+                }
+                
+                try {
+                    # Check for encrypted volumes (FullyEncrypted or EncryptionInProgress), not just protection status
+                    $bitlockerVolumes = Get-BitLockerVolume -ErrorAction Stop | Where-Object { 
+                        $_.VolumeStatus -eq 'FullyEncrypted' -or $_.VolumeStatus -eq 'EncryptionInProgress' 
+                    }
+                    
+                    if (-not $bitlockerVolumes) {
+                        Write-Host "   ✓ No BitLocker-encrypted volumes found" -ForegroundColor Gray
+                    } else {
+                        foreach ($vol in $bitlockerVolumes) {
+                            # Skip volumes without a proper drive letter (e.g., \\?\Volume{GUID})
+                            if ($vol.MountPoint -notmatch '^[A-Z]:') {
+                                continue
+                            }
+                            
+                            $driveLetter = $vol.MountPoint -replace ':', ''
+                            $keyFile = Join-Path $backup.destinationPath "BitLocker-$env:COMPUTERNAME-${driveLetter}-$(Get-Date -Format 'yyyy-MM-dd').txt"
+                            
+                            # Check if we already have a backup from today
+                            if (Test-Path $keyFile) {
+                                Write-Host "   ✓ $($vol.MountPoint) key already backed up today" -ForegroundColor Gray
+                                continue
+                            }
+                            
+                            if ($IsDryRun) {
+                                Write-Host "   [DRY RUN] Would backup $($vol.MountPoint) recovery key to $keyFile" -ForegroundColor Cyan
+                            } else {
+                                # Get recovery password protectors
+                                $recoveryProtectors = $vol.KeyProtector | Where-Object { $_.KeyProtectorType -eq 'RecoveryPassword' }
+                                
+                                if ($recoveryProtectors) {
+                                    $content = @()
+                                    $content += "BitLocker Recovery Key Backup"
+                                    $content += "Generated: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+                                    $content += "Computer: $env:COMPUTERNAME"
+                                    $content += "Volume: $($vol.MountPoint) ($($vol.VolumeType))"
+                                    $content += "-" * 50
+                                    
+                                    foreach ($protector in $recoveryProtectors) {
+                                        $content += ""
+                                        $content += "Key ID: $($protector.KeyProtectorId)"
+                                        $content += "Recovery Password: $($protector.RecoveryPassword)"
+                                    }
+                                    
+                                    $content | Out-File -FilePath $keyFile -Encoding UTF8
+                                    Write-Host "   ✓ $($vol.MountPoint) recovery key saved to $keyFile" -ForegroundColor Green
+                                } else {
+                                    Write-Host "   ⚠ $($vol.MountPoint) has no recovery password protector" -ForegroundColor Yellow
+                                }
+                            }
+                        }
+                    }
+                } catch {
+                    Write-Host "   ✗ Failed to backup BitLocker keys: $_" -ForegroundColor Red
+                    Write-Host "   → Run as Administrator to access BitLocker info" -ForegroundColor Yellow
+                }
+            } elseif ($backupType -eq "WindowsBackup") {
+                # Check Windows Backup status
+                try {
+                    $wbReg = Get-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\AppListBackup" -ErrorAction Stop
+                    if ($wbReg.IsBackupEnabledAndMSAAttached -eq 1) {
+                        Write-Host "   ✓ Windows Backup is enabled and syncing to Microsoft account" -ForegroundColor Gray
+                    } else {
+                        if ($IsDryRun) {
+                            Write-Host "   [DRY RUN] Would open Windows Backup settings" -ForegroundColor Cyan
+                        } else {
+                            Write-Host "   ⚠ Windows Backup needs to be enabled" -ForegroundColor Yellow
+                            Write-Host "   → Opening Windows Backup settings..." -ForegroundColor Cyan
+                            Start-Process "ms-settings:backup"
+                        }
+                    }
+                } catch {
+                    if ($IsDryRun) {
+                        Write-Host "   [DRY RUN] Would open Windows Backup settings" -ForegroundColor Cyan
+                    } else {
+                        Write-Host "   ⚠ Windows Backup not configured" -ForegroundColor Yellow
+                        Write-Host "   → Opening Windows Backup settings..." -ForegroundColor Cyan
+                        Start-Process "ms-settings:backup"
+                    }
+                }
+            } else {
+                Write-Host "   ! Unsupported backup type: $backupType" -ForegroundColor Yellow
+                Write-Host "   Currently supported: WindowsBackup, BitLockerKeys, FileHistory" -ForegroundColor Yellow
+            }
+        }
+    }
+
+    # --- Windows Settings Configuration ---
+    if ($Configuration.windowsSettings) {
+        $needsConfig = $false
+        if ($PreFlightStatus.WindowsSettings) {
+            if ($PreFlightStatus.WindowsSettings.ShowFileExtensions -and -not $PreFlightStatus.WindowsSettings.ShowFileExtensions.Configured) {
+                $needsConfig = $true
+            }
+            if ($PreFlightStatus.WindowsSettings.ShowHiddenFiles -and -not $PreFlightStatus.WindowsSettings.ShowHiddenFiles.Configured) {
+                $needsConfig = $true
+            }
+            if ($PreFlightStatus.WindowsSettings.DarkMode -and -not $PreFlightStatus.WindowsSettings.DarkMode.Configured) {
+                $needsConfig = $true
+            }
+            if ($PreFlightStatus.WindowsSettings.DesktopWallpaper -and -not $PreFlightStatus.WindowsSettings.DesktopWallpaper.Configured) {
+                $needsConfig = $true
+            }
+            if ($PreFlightStatus.WindowsSettings.Taskbar) {
+                if ($PreFlightStatus.WindowsSettings.Taskbar.Alignment -and -not $PreFlightStatus.WindowsSettings.Taskbar.Alignment.Configured) {
+                    $needsConfig = $true
+                }
+                if ($PreFlightStatus.WindowsSettings.Taskbar.ShowWidgets -and -not $PreFlightStatus.WindowsSettings.Taskbar.ShowWidgets.Configured) {
+                    $needsConfig = $true
+                }
+                if ($PreFlightStatus.WindowsSettings.Taskbar.ShowSearch -and -not $PreFlightStatus.WindowsSettings.Taskbar.ShowSearch.Configured) {
+                    $needsConfig = $true
+                }
+            }
+        }
+        
+        if ($needsConfig) {
+            Write-Host "`n=== Windows Settings ===" -ForegroundColor Cyan
+            
+            # File Extensions
+            if ($PreFlightStatus.WindowsSettings.ShowFileExtensions -and -not $PreFlightStatus.WindowsSettings.ShowFileExtensions.Configured) {
+                $desired = $Configuration.windowsSettings.showFileExtensions
+                $hideValue = if ($desired) { 0 } else { 1 }
+                if ($IsDryRun) {
+                    Write-Host " • [DRY RUN] Would set file extensions to $(if ($desired) { 'visible' } else { 'hidden' })" -ForegroundColor Cyan
+                } else {
+                    Write-Host " • Setting file extensions to $(if ($desired) { 'visible' } else { 'hidden' })..." -ForegroundColor Green -NoNewline
+                    Set-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" -Name "HideFileExt" -Value $hideValue
+                    Write-Host " ✓" -ForegroundColor Green
+                }
+            }
+            
+            # Hidden Files
+            if ($PreFlightStatus.WindowsSettings.ShowHiddenFiles -and -not $PreFlightStatus.WindowsSettings.ShowHiddenFiles.Configured) {
+                $desired = $Configuration.windowsSettings.showHiddenFiles
+                $hiddenValue = if ($desired) { 1 } else { 2 }
+                if ($IsDryRun) {
+                    Write-Host " • [DRY RUN] Would set hidden files to $(if ($desired) { 'visible' } else { 'hidden' })" -ForegroundColor Cyan
+                } else {
+                    Write-Host " • Setting hidden files to $(if ($desired) { 'visible' } else { 'hidden' })..." -ForegroundColor Green -NoNewline
+                    Set-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" -Name "Hidden" -Value $hiddenValue
+                    Write-Host " ✓" -ForegroundColor Green
+                }
+            }
+            
+            # Dark Mode
+            if ($PreFlightStatus.WindowsSettings.DarkMode -and -not $PreFlightStatus.WindowsSettings.DarkMode.Configured) {
+                $desired = $Configuration.windowsSettings.darkMode
+                $lightValue = if ($desired) { 0 } else { 1 }
+                if ($IsDryRun) {
+                    Write-Host " • [DRY RUN] Would set theme to $(if ($desired) { 'dark' } else { 'light' }) mode" -ForegroundColor Cyan
+                } else {
+                    Write-Host " • Setting theme to $(if ($desired) { 'dark' } else { 'light' }) mode..." -ForegroundColor Green -NoNewline
+                    Set-ItemProperty "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Themes\Personalize" -Name "AppsUseLightTheme" -Value $lightValue
+                    Set-ItemProperty "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Themes\Personalize" -Name "SystemUsesLightTheme" -Value $lightValue
+                    Write-Host " ✓" -ForegroundColor Green
+                }
+            }
+            
+            # Desktop Wallpaper
+            if ($PreFlightStatus.WindowsSettings.DesktopWallpaper -and -not $PreFlightStatus.WindowsSettings.DesktopWallpaper.Configured) {
+                $desiredWallpaper = $Configuration.windowsSettings.desktopWallpaper
+                if ($IsDryRun) {
+                    Write-Host " • [DRY RUN] Would set desktop wallpaper to $desiredWallpaper" -ForegroundColor Cyan
+                } else {
+                    Write-Host " • Setting desktop wallpaper..." -ForegroundColor Green -NoNewline
+                    # Use SystemParametersInfo to set wallpaper properly
+                    Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+public class Wallpaper {
+    [DllImport("user32.dll", CharSet = CharSet.Auto)]
+    public static extern int SystemParametersInfo(int uAction, int uParam, string lpvParam, int fuWinIni);
+}
+"@
+                    [Wallpaper]::SystemParametersInfo(0x0014, 0, $desiredWallpaper, 0x01 -bor 0x02) | Out-Null
+                    Write-Host " ✓" -ForegroundColor Green
+                }
+            }
+            
+            # Taskbar Settings
+            if ($PreFlightStatus.WindowsSettings.Taskbar) {
+                $taskbarChanged = $false
+                
+                # Taskbar Alignment
+                if ($PreFlightStatus.WindowsSettings.Taskbar.Alignment -and -not $PreFlightStatus.WindowsSettings.Taskbar.Alignment.Configured) {
+                    $desired = $Configuration.windowsSettings.taskbar.alignment
+                    $alignValue = if ($desired -eq "left") { 0 } else { 1 }
+                    if ($IsDryRun) {
+                        Write-Host " • [DRY RUN] Would set taskbar alignment to $desired" -ForegroundColor Cyan
+                    } else {
+                        Write-Host " • Setting taskbar alignment to $desired..." -ForegroundColor Green -NoNewline
+                        Set-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" -Name "TaskbarAl" -Value $alignValue
+                        Write-Host " ✓" -ForegroundColor Green
+                        $taskbarChanged = $true
+                    }
+                }
+                
+                # Widgets
+                if ($PreFlightStatus.WindowsSettings.Taskbar.ShowWidgets -and -not $PreFlightStatus.WindowsSettings.Taskbar.ShowWidgets.Configured) {
+                    $desired = $Configuration.windowsSettings.taskbar.showWidgets
+                    $widgetValue = if ($desired) { 1 } else { 0 }
+                    if ($IsDryRun) {
+                        Write-Host " • [DRY RUN] Would $(if ($desired) { 'show' } else { 'hide' }) widgets" -ForegroundColor Cyan
+                    } else {
+                        Write-Host " • $(if ($desired) { 'Showing' } else { 'Hiding' }) widgets..." -ForegroundColor Green -NoNewline
+                        Set-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" -Name "TaskbarDa" -Value $widgetValue
+                        Write-Host " ✓" -ForegroundColor Green
+                        $taskbarChanged = $true
+                    }
+                }
+                
+                # Search
+                if ($PreFlightStatus.WindowsSettings.Taskbar.ShowSearch -and -not $PreFlightStatus.WindowsSettings.Taskbar.ShowSearch.Configured) {
+                    $desired = $Configuration.windowsSettings.taskbar.showSearch
+                    $searchValue = if ($desired) { 1 } else { 0 }
+                    if ($IsDryRun) {
+                        Write-Host " • [DRY RUN] Would $(if ($desired) { 'show' } else { 'hide' }) search" -ForegroundColor Cyan
+                    } else {
+                        Write-Host " • $(if ($desired) { 'Showing' } else { 'Hiding' }) search..." -ForegroundColor Green -NoNewline
+                        Set-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Search" -Name "SearchboxTaskbarMode" -Value $searchValue
+                        Write-Host " ✓" -ForegroundColor Green
+                        $taskbarChanged = $true
+                    }
+                }
+                
+                # Restart Explorer if taskbar settings changed
+                if ($taskbarChanged -and -not $IsDryRun) {
+                    Write-Host " • Restarting Explorer for taskbar changes..." -ForegroundColor Green -NoNewline
+                    Stop-Process -Name explorer -Force -ErrorAction SilentlyContinue
+                    Start-Sleep -Milliseconds 500
+                    Start-Process explorer
+                    Write-Host " ✓" -ForegroundColor Green
+                }
+            }
+            
+            # Refresh Explorer to apply changes (only for file/folder settings, if not already restarted)
+            if (-not $IsDryRun -and -not $taskbarChanged) {
+                $needsExplorerRefresh = ($PreFlightStatus.WindowsSettings.ShowFileExtensions -and -not $PreFlightStatus.WindowsSettings.ShowFileExtensions.Configured) -or
+                                        ($PreFlightStatus.WindowsSettings.ShowHiddenFiles -and -not $PreFlightStatus.WindowsSettings.ShowHiddenFiles.Configured)
+                if ($needsExplorerRefresh) {
+                    Write-Host " • Refreshing Explorer..." -ForegroundColor Green -NoNewline
+                    Stop-Process -Name explorer -Force -ErrorAction SilentlyContinue
+                    Start-Sleep -Milliseconds 500
+                    Start-Process explorer
+                    Write-Host " ✓" -ForegroundColor Green
+                }
+            }
+        }
+    }
+
     # Final summary
     if ($IsDryRun) {
         Write-Host "`n=== DRY RUN Complete ===" -ForegroundColor Magenta
@@ -863,6 +1589,15 @@ function Install-Tools {
                 if ($img.Action -eq "Pull") {
                     $img.Installed = $true
                     $img.Action = "Skip"
+                }
+            }
+        }
+        # Update Backups that were configured
+        if ($PreFlightStatus.Backups) {
+            foreach ($backup in $PreFlightStatus.Backups) {
+                if ($backup.Action -eq "Configure") {
+                    $backup.Configured = $true
+                    $backup.Action = "Skip"
                 }
             }
         }
@@ -929,7 +1664,55 @@ if (-not $NoCache -and (Test-CacheValid)) {
             }
         }
         
-        if ($newTools.Count -gt 0) {
+        # Check for new backup configs
+        $newBackups = @()
+        if (-not $preFlightStatus.Backups) {
+            $preFlightStatus.Backups = @()
+        }
+        if ($config.backups) {
+            foreach ($backup in $config.backups) {
+                $backupType = if ($backup.type) { $backup.type } else { "FileHistory" }
+                $destForMatch = if ($backup.destinationPath) { $backup.destinationPath } else { "" }
+                $cached = $preFlightStatus.Backups | Where-Object { $_.Type -eq $backupType -and $_.Destination -eq $destForMatch }
+                if (-not $cached) {
+                    $displayDest = if ($backup.destinationPath) { " → $($backup.destinationPath)" } else { "" }
+                    Write-Host "🔍 Checking new backup config: $backupType$displayDest..." -ForegroundColor Cyan -NoNewline
+                    $isConfigured = $false
+                    if ($backupType -eq "FileHistory") {
+                        try {
+                            $fhConfig = Get-CimInstance -Namespace root/Microsoft/Windows/FileHistory -ClassName MSFT_FhConfigInfo -ErrorAction Stop
+                            $isConfigured = ($fhConfig.BackupLocation -eq $backup.destinationPath -and $fhConfig.Enabled)
+                        } catch {
+                            # Fallback: check if FileHistory config folder exists in the destination
+                            $fhConfigPath = Join-Path $backup.destinationPath "Configuration"
+                            $isConfigured = (Test-Path $fhConfigPath)
+                        }
+                    } elseif ($backupType -eq "BitLockerKeys") {
+                        if (Test-Path $backup.destinationPath) {
+                            $todayFiles = Get-ChildItem -Path $backup.destinationPath -Filter "BitLocker-$env:COMPUTERNAME-*-$(Get-Date -Format 'yyyy-MM-dd').txt" -ErrorAction SilentlyContinue
+                            $isConfigured = ($todayFiles.Count -gt 0)
+                        }
+                    } elseif ($backupType -eq "WindowsBackup") {
+                        try {
+                            $wbReg = Get-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\AppListBackup" -ErrorAction Stop
+                            $isConfigured = ($wbReg.IsBackupEnabledAndMSAAttached -eq 1)
+                        } catch {
+                            $isConfigured = $false
+                        }
+                    }
+                    $preFlightStatus.Backups += [PSCustomObject]@{
+                        Type = $backupType
+                        Destination = $backup.destinationPath
+                        Configured = $isConfigured
+                        Action = if (-not $backup.enabled) { "Disabled" } elseif ($isConfigured) { "Skip" } else { "Configure" }
+                    }
+                    Write-Host $(if ($isConfigured) { " ✓ configured" } elseif (-not $backup.enabled) { " disabled" } else { " needs config" }) -ForegroundColor $(if ($isConfigured) { 'Green' } elseif (-not $backup.enabled) { 'Gray' } else { 'Yellow' })
+                    $newBackups += $backupType
+                }
+            }
+        }
+        
+        if ($newTools.Count -gt 0 -or $newBackups.Count -gt 0) {
             Save-StatusToCache -Status $preFlightStatus
         }
         

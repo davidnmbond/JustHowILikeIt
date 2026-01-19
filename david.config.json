@@ -11,8 +11,24 @@
   },
   "ohMyPosh": {
     "theme": "marcduiker",
-    "enabled": true,
-    "font": "CaskaydiaCove"
+    "enabled": true
+  },
+  "fonts": {
+    "nerdFont": "CascadiaCode",
+    "terminalFontName": "CaskaydiaCove NF",
+    "configureVSCode": true,
+    "configureWindowsTerminal": true
+  },
+  "windowsSettings": {
+    "showFileExtensions": true,
+    "showHiddenFiles": false,
+    "darkMode": true,
+    "desktopWallpaper": "C:\\Windows\\SystemApps\\MicrosoftWindows.Client.CBS_cw5n1h2txyewy\\DesktopSpotlight\\Assets\\Images\\image_3.jpg",
+    "taskbar": {
+      "alignment": "left",
+      "showWidgets": false,
+      "showSearch": false
+    }
   },
   "tools": [
     {
@@ -51,8 +67,23 @@
       "category": "SOURCE CONTROL & CLI"
     },
     {
+      "id": "Microsoft.AzureCLI",
+      "name": "Azure CLI",
+      "category": "CLOUD & INFRASTRUCTURE"
+    },
+    {
+      "id": "Amazon.AWSCLI",
+      "name": "AWS CLI",
+      "category": "CLOUD & INFRASTRUCTURE"
+    },
+    {
       "id": "OpenJS.NodeJS",
       "name": "Node.js",
+      "category": "LANGUAGES & RUNTIMES"
+    },
+    {
+      "id": "Microsoft.DotNet.SDK.10",
+      "name": ".NET SDK 10.0",
       "category": "LANGUAGES & RUNTIMES"
     },
     {
@@ -84,6 +115,11 @@
     {
       "id": "Microsoft.Teams.Classic",
       "name": "Microsoft Teams Classic (Work/School)",
+      "category": "COMMUNICATION"
+    },
+    {
+      "id": "SlackTechnologies.Slack",
+      "name": "Slack",
       "category": "COMMUNICATION"
     },
     {
@@ -157,6 +193,16 @@
       "category": "GAMING"
     }
   ],
+  "dotnetTools": [
+    {
+      "id": "magicsuite.cli",
+      "name": "MagicSuite CLI"
+    },
+    {
+      "id": "nbgv",
+      "name": "Nerdbank.GitVersioning CLI"
+    }
+  ],
   "firefoxExtensions": [
     {
       "id": "uBlock0@raymondhill.net",
@@ -179,6 +225,17 @@
       "image": "rabbitmq",
       "tag": "3-management",
       "name": "RabbitMQ with Management UI"
+    }
+  ],
+  "backups": [
+    {
+      "enabled": true,
+      "type": "WindowsBackup"
+    },
+    {
+      "enabled": true,
+      "type": "BitLockerKeys",
+      "destinationPath": "C:\\Users\\david\\OneDrive\\Bitlocker"
     }
   ]
 }
