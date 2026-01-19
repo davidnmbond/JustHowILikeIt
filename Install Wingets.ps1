@@ -19,9 +19,6 @@
 .EXAMPLE
     .\JustHowILikeIt.ps1 -DryRun
     Shows what would be installed without making any changes
-
-.PARAMETER NoCache
-    When specified, ignores any cached pre-flight status and performs fresh checks.
     
 .EXAMPLE
     .\JustHowILikeIt.ps1
@@ -33,18 +30,11 @@ param(
     [string]$ConfigFile,
     
     [Parameter(Mandatory=$false)]
-    [switch]$DryRun,
-    
-    [Parameter(Mandatory=$false)]
-    [switch]$NoCache
+    [switch]$DryRun
 )
 
 # Automatically set execution policy for this session to allow the script to run
 Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope Process -Force
-
-# Cache settings
-$script:CacheFile = Join-Path (Split-Path -Parent $PSCommandPath) ".preflight-cache.json"
-$script:CacheMaxAgeMinutes = 60  # Cache valid for 1 hour
 
 # Function to load and validate configuration
 function Get-Configuration {
@@ -95,89 +85,11 @@ function Get-Configuration {
 # Load configuration
 $config = Get-Configuration -ConfigPath $ConfigFile
 
-# Function to check if cache is valid
-function Test-CacheValid {
-    if (-not (Test-Path $script:CacheFile)) {
-        return $false
-    }
-    
-    try {
-        $cache = Get-Content $script:CacheFile -Raw | ConvertFrom-Json
-        $cacheTime = [DateTime]::Parse($cache.LastUpdated)
-        $age = (Get-Date) - $cacheTime
-        
-        if ($age.TotalMinutes -lt $script:CacheMaxAgeMinutes) {
-            return $true
-        }
-    }
-    catch {
-        return $false
-    }
-    
-    return $false
-}
-
-# Function to load cached status
-function Get-CachedStatus {
-    try {
-        $cache = Get-Content $script:CacheFile -Raw | ConvertFrom-Json
-        
-        # Convert back to proper objects
-        $status = @{
-            Tools = @()
-            GitHubCLI = $cache.GitHubCLI
-            OhMyPosh = $cache.OhMyPosh
-            Repository = $cache.Repository
-            LastUpdated = $cache.LastUpdated
-        }
-        
-        foreach ($tool in $cache.Tools) {
-            $status.Tools += [PSCustomObject]@{
-                Name = $tool.Name
-                Id = $tool.Id
-                Category = $tool.Category
-                Installed = $tool.Installed
-                Action = $tool.Action
-            }
-        }
-        
-        return $status
-    }
-    catch {
-        return $null
-    }
-}
-
-# Function to save status to cache
-function Save-StatusToCache {
-    param($Status)
-    
-    $cacheData = @{
-        LastUpdated = (Get-Date).ToString("o")
-        Tools = $Status.Tools
-        GitHubCLI = $Status.GitHubCLI
-        OhMyPosh = $Status.OhMyPosh
-        Repository = $Status.Repository
-    }
-    
-    $cacheData | ConvertTo-Json -Depth 10 | Set-Content $script:CacheFile -Force
-}
-
 # Function to check if a tool is already installed
 function Test-ToolInstalled {
     param(
         [string]$ToolId
     )
-    
-    # Special case checks for tools that may not be tracked by winget
-    switch ($ToolId) {
-        "Microsoft.WSL" {
-            # Check if wsl command exists
-            if (Get-Command wsl -ErrorAction SilentlyContinue) {
-                return $true
-            }
-        }
-    }
     
     try {
         $checkInstalled = winget list --id $ToolId --exact --source winget 2>$null | Out-String
@@ -506,32 +418,11 @@ function Install-Tools {
         if ($toolsToInstall.Count -gt 0 -or $PreFlightStatus.OhMyPosh.Action -ne "Skip") {
             Write-Host "Restart your terminal for changes to take effect." -ForegroundColor Yellow
         }
-        
-        # Refresh and save cache after installation
-        Write-Host "`nUpdating status cache..." -ForegroundColor Gray
-        $freshStatus = Get-PreFlightStatus -Configuration $Configuration
-        Save-StatusToCache -Status $freshStatus
     }
 }
 
-# Check for cached pre-flight status
-$preFlightStatus = $null
-$usedCache = $false
-
-if (-not $NoCache -and (Test-CacheValid)) {
-    $preFlightStatus = Get-CachedStatus
-    if ($preFlightStatus) {
-        $cacheAge = [Math]::Round(((Get-Date) - [DateTime]::Parse($preFlightStatus.LastUpdated)).TotalMinutes)
-        Write-Host "📋 Using cached status (${cacheAge}m old). Use -NoCache to refresh." -ForegroundColor Gray
-        $usedCache = $true
-    }
-}
-
-if (-not $preFlightStatus) {
-    $preFlightStatus = Get-PreFlightStatus -Configuration $config
-    Save-StatusToCache -Status $preFlightStatus
-}
-
+# Run pre-flight checks first
+$preFlightStatus = Get-PreFlightStatus -Configuration $config
 Show-PreFlightStatus -Status $preFlightStatus
 
 if ($DryRun) {
