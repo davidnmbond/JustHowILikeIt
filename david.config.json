@@ -103,6 +103,11 @@
       "id": "ShareX.ShareX",
       "name": "ShareX",
       "category": "UTILITIES"
+    },
+    {
+      "id": "PostgreSQL.pgAdmin",
+      "name": "pgAdmin 4",
+      "category": "DATABASES"
     }
   ]
 }

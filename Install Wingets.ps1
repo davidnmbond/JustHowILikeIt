@@ -100,7 +100,7 @@ function Test-ToolInstalled {
     }
 }
 
-# Function to perform pre-flight checks
+# Function to perform pre-flight checks with progress bar
 function Get-PreFlightStatus {
     param($Configuration)
     
@@ -111,8 +111,17 @@ function Get-PreFlightStatus {
         Repository = $null
     }
     
-    # Check each tool
+    Write-Host "`n🔍 Running pre-flight checks..." -ForegroundColor Cyan
+    
+    $totalChecks = $Configuration.tools.Count + 3  # tools + gh + posh + repo
+    $currentCheck = 0
+    
+    # Check each tool with progress bar
     foreach ($tool in $Configuration.tools) {
+        $currentCheck++
+        $percentComplete = [int](($currentCheck / $totalChecks) * 100)
+        Write-Progress -Activity "Pre-flight checks" -Status "Checking $($tool.name)..." -PercentComplete $percentComplete
+        
         $isInstalled = Test-ToolInstalled -ToolId $tool.id
         $status.Tools += [PSCustomObject]@{
             Name = $tool.name
@@ -124,6 +133,9 @@ function Get-PreFlightStatus {
     }
     
     # Check GitHub CLI
+    $currentCheck++
+    Write-Progress -Activity "Pre-flight checks" -Status "Checking GitHub CLI..." -PercentComplete ([int](($currentCheck / $totalChecks) * 100))
+    
     $ghInstalled = Get-Command gh -ErrorAction SilentlyContinue
     if ($ghInstalled) {
         $authStatus = gh auth status 2>&1
@@ -142,6 +154,9 @@ function Get-PreFlightStatus {
     }
     
     # Check Oh My Posh
+    $currentCheck++
+    Write-Progress -Activity "Pre-flight checks" -Status "Checking Oh My Posh..." -PercentComplete ([int](($currentCheck / $totalChecks) * 100))
+    
     if ($Configuration.ohMyPosh.enabled) {
         $poshInstalled = Get-Command oh-my-posh -ErrorAction SilentlyContinue
         if ($poshInstalled -and (Test-Path $PROFILE)) {
@@ -167,6 +182,8 @@ function Get-PreFlightStatus {
     }
     
     # Check Repository
+    $currentCheck++
+    Write-Progress -Activity "Pre-flight checks" -Status "Checking repository..." -PercentComplete 100
     if ($Configuration.repository.owner -and $Configuration.repository.name) {
         $repoPath = [Environment]::ExpandEnvironmentVariables($Configuration.repository.clonePath)
         $repoExists = Test-Path $repoPath
@@ -177,6 +194,8 @@ function Get-PreFlightStatus {
             Action = if ($repoExists) { "Pull updates" } else { "Clone" }
         }
     }
+    
+    Write-Progress -Activity "Pre-flight checks" -Completed
     
     return $status
 }
@@ -254,181 +273,150 @@ function Test-WinGet {
 function Install-Tools {
     param(
         $Configuration,
+        $PreFlightStatus,
         [bool]$IsDryRun = $false
     )
     
-    # Output a starting message to the console in cyan
+    # Check if WinGet is present before proceeding
+    if (-not (Test-WinGet)) {
+        Write-Host "Error: WinGet is not installed. Please install it from the Microsoft Store." -ForegroundColor Red
+        return
+    }
+    
+    $toolsToInstall = $PreFlightStatus.Tools | Where-Object { $_.Action -eq "Install" }
+    $toolsAlreadyInstalled = $PreFlightStatus.Tools | Where-Object { $_.Action -eq "Skip" }
+    
+    # Output a starting message
     if ($IsDryRun) {
         Write-Host "`n=== DRY RUN MODE - No changes will be made ===" -ForegroundColor Magenta
     } else {
-        Write-Host "`n=== Starting Developer Environment Setup (Desired State) ===" -ForegroundColor Cyan
+        Write-Host "`n=== Installing $($toolsToInstall.Count) Tools ===" -ForegroundColor Cyan
     }
-    Write-Host "User: $($Configuration.user.name) (@$($Configuration.user.githubUsername))" -ForegroundColor Gray
-    Write-Host "Tools to install: $($Configuration.tools.Count)" -ForegroundColor Gray
-    Write-Host ""
     
-    # Check if WinGet is present before proceeding
-    if (-not (Test-WinGet)) {
-        # Output error message if winget is missing
-        Write-Host "Error: WinGet is not installed. Please install it from the Microsoft Store." -ForegroundColor Red
-        # Exit the function
-        return
-    }
-
-    # Iterate through each tool defined in the configuration
-    foreach ($tool in $Configuration.tools) {
-        $toolId = $tool.id
-        $toolName = $tool.name
-        
-        # Display the current tool being checked in yellow
-        Write-Host "`n[Checking] $toolName ($toolId)..." -ForegroundColor Yellow
-        
-        # Search for the exact ID and check if the result is not null/empty
-        $checkInstalled = winget list --id $toolId --exact --source winget 2>$null | Out-String
-        
-        # If the output doesn't contain the tool ID, it's likely not installed
-        if ($checkInstalled -match [regex]::Escape($toolId)) {
-            # Notify the user that the tool is already present
-            Write-Host " - $toolName is already installed. Skipping..." -ForegroundColor Gray
-        }
-        else {
-            if ($IsDryRun) {
-                # In dry run mode, just show what would be installed
-                Write-Host " - [DRY RUN] Would install $toolName" -ForegroundColor Cyan
+    # Only process tools that need installing
+    $installed = 0
+    $failed = 0
+    
+    foreach ($tool in $toolsToInstall) {
+        if ($IsDryRun) {
+            Write-Host " • [DRY RUN] Would install $($tool.Name)" -ForegroundColor Cyan
+        } else {
+            Write-Host " • Installing $($tool.Name)..." -ForegroundColor Green -NoNewline
+            winget install --id $tool.Id --silent --accept-package-agreements --accept-source-agreements 2>&1 | Out-Null
+            
+            if ($LASTEXITCODE -eq 0) {
+                Write-Host " ✓" -ForegroundColor Green
+                $installed++
             } else {
-                # Notify the user that the installation is starting
-                Write-Host " - Installing $toolName..." -ForegroundColor Green
-                # Execute winget install with silent flags and agreement acceptance
-                winget install --id $toolId --silent --accept-package-agreements --accept-source-agreements
-                
-                # Check the exit code of the last command
-                if ($LASTEXITCODE -eq 0) {
-                    # Success message
-                    Write-Host " - Successfully installed $toolName" -ForegroundColor Green
-                } else {
-                    # Error message with the specific exit code returned by winget
-                    Write-Host " - Failed to install $toolName (Exit Code: $LASTEXITCODE)" -ForegroundColor Red
-                }
+                Write-Host " ✗ (Exit: $LASTEXITCODE)" -ForegroundColor Red
+                $failed++
             }
         }
+    }
+    
+    if (-not $IsDryRun -and $toolsToInstall.Count -gt 0) {
+        Write-Host "`n   Summary: $installed installed, $failed failed, $($toolsAlreadyInstalled.Count) already installed" -ForegroundColor Gray
     }
 
     # --- GitHub CLI Setup & Authentication ---
-    Write-Host "`n[Desired State] GitHub CLI Configuration..." -ForegroundColor Yellow
-    if (Get-Command gh -ErrorAction SilentlyContinue) {
-        # Check authentication status
-        $authStatus = gh auth status 2>&1
-        if ($authStatus -match "Logged in to github.com") {
-            Write-Host " - GitHub CLI is already authenticated." -ForegroundColor Gray
-        } else {
+    if ($PreFlightStatus.GitHubCLI.Action -ne "Skip auth") {
+        Write-Host "`n=== GitHub CLI Configuration ===" -ForegroundColor Cyan
+        if ($PreFlightStatus.GitHubCLI.Installed) {
             if ($IsDryRun) {
-                Write-Host " - [DRY RUN] Would authenticate with GitHub" -ForegroundColor Cyan
+                Write-Host " • [DRY RUN] Would authenticate with GitHub" -ForegroundColor Cyan
             } else {
-                Write-Host " - Authenticating with GitHub..." -ForegroundColor Green
-                Write-Host " ! Please follow the prompts to authenticate..." -ForegroundColor Cyan
+                Write-Host " • Authenticating with GitHub..." -ForegroundColor Green
                 gh auth login
             }
         }
-        
-        # Install GitHub Copilot CLI extension
+    }
+    
+    # Install GitHub Copilot CLI extension
+    if ($PreFlightStatus.GitHubCLI.Installed) {
         if ($IsDryRun) {
-            Write-Host " - [DRY RUN] Would install GitHub Copilot extension" -ForegroundColor Cyan
+            Write-Host " • [DRY RUN] Would install GitHub Copilot extension" -ForegroundColor Cyan
         } else {
-            Write-Host " - Ensuring GitHub Copilot extension is installed..." -ForegroundColor Green
             gh extension install github/gh-copilot --force 2>$null
         }
+    }
+    
+    # Clone/sync repository if configured
+    if ($PreFlightStatus.Repository) {
+        Write-Host "`n=== Repository Configuration ===" -ForegroundColor Cyan
+        $repoPath = $PreFlightStatus.Repository.Path
+        $repoFullName = "$($Configuration.repository.owner)/$($Configuration.repository.name)"
         
-        # Clone/sync repository if configured
-        if ($Configuration.repository.owner -and $Configuration.repository.name) {
-            Write-Host " - Setting up $($Configuration.repository.name) repository..." -ForegroundColor Green
-            $repoPath = [Environment]::ExpandEnvironmentVariables($Configuration.repository.clonePath)
-            $repoFullName = "$($Configuration.repository.owner)/$($Configuration.repository.name)"
-            
-            if (Test-Path $repoPath) {
-                Write-Host " - Repository already exists at $repoPath" -ForegroundColor Gray
-                if ($IsDryRun) {
-                    Write-Host " - [DRY RUN] Would pull latest changes" -ForegroundColor Cyan
-                } else {
-                    Write-Host " - Pulling latest changes..." -ForegroundColor Green
-                    Push-Location $repoPath
-                    git pull origin main 2>$null
-                    Pop-Location
-                }
+        if ($PreFlightStatus.Repository.Exists) {
+            if ($IsDryRun) {
+                Write-Host " • [DRY RUN] Would pull latest changes" -ForegroundColor Cyan
             } else {
-                if ($IsDryRun) {
-                    Write-Host " - [DRY RUN] Would clone repository to $repoPath" -ForegroundColor Cyan
-                } else {
-                    Write-Host " - Cloning repository to $repoPath..." -ForegroundColor Green
-                    gh repo clone $repoFullName $repoPath
-                }
+                Write-Host " • Pulling latest changes..." -ForegroundColor Green -NoNewline
+                Push-Location $repoPath
+                git pull origin main 2>$null | Out-Null
+                Pop-Location
+                Write-Host " ✓" -ForegroundColor Green
             }
-            
-            # Copy this script to the repository if authenticated
-            if ($authStatus -match "Logged in to github.com" -or (gh auth status 2>&1) -match "Logged in to github.com") {
+        } else {
+            if ($IsDryRun) {
+                Write-Host " • [DRY RUN] Would clone repository to $repoPath" -ForegroundColor Cyan
+            } else {
+                Write-Host " • Cloning repository..." -ForegroundColor Green -NoNewline
+                gh repo clone $repoFullName $repoPath 2>$null | Out-Null
+                Write-Host " ✓" -ForegroundColor Green
+            }
+        }
+        
+        # Sync script to repository
+        if (-not $IsDryRun -and (Get-Command gh -ErrorAction SilentlyContinue)) {
+            $authStatus = gh auth status 2>&1
+            if ($authStatus -match "Logged in to github.com") {
                 $scriptSource = $PSCommandPath
                 $scriptDest = Join-Path $repoPath "JustHowILikeIt.ps1"
                 
                 if (Test-Path $scriptSource) {
-                    if ($IsDryRun) {
-                        Write-Host " - [DRY RUN] Would sync script to: $scriptDest" -ForegroundColor Cyan
-                    } else {
-                        Write-Host " - Syncing current script to repository..." -ForegroundColor Green
-                        Copy-Item -Path $scriptSource -Destination $scriptDest -Force
-                        Write-Host " - Script synced to: $scriptDest" -ForegroundColor Gray
-                        Write-Host " ! Run 'cd $repoPath; git add .; git commit -m ""Update script""; git push' to push changes" -ForegroundColor Magenta
-                    }
+                    Copy-Item -Path $scriptSource -Destination $scriptDest -Force
                 }
             }
         }
-    } else {
-        Write-Host " ! GitHub CLI not found. It will be installed by this script." -ForegroundColor Yellow
     }
 
     # --- Oh My Posh Desired State Configuration ---
-    if ($Configuration.ohMyPosh.enabled) {
-        Write-Host "`n[Desired State] Oh My Posh Configuration..." -ForegroundColor Yellow
+    if ($PreFlightStatus.OhMyPosh -and $PreFlightStatus.OhMyPosh.Action -ne "Skip") {
+        Write-Host "`n=== Oh My Posh Configuration ===" -ForegroundColor Cyan
         if (Get-Command oh-my-posh -ErrorAction SilentlyContinue) {
-            # Define the desired init line for the configured theme
             $themeName = $Configuration.ohMyPosh.theme
             $poshInitLine = "oh-my-posh init pwsh --config `"`$env:POSH_THEMES_PATH\$themeName.omp.json`" | Invoke-Expression"
             
-            # Check if the profile file exists, if not create it
             if (-not (Test-Path $PROFILE)) {
                 if ($IsDryRun) {
-                    Write-Host " - [DRY RUN] Would create new PowerShell profile" -ForegroundColor Cyan
+                    Write-Host " • [DRY RUN] Would create PowerShell profile" -ForegroundColor Cyan
                 } else {
                     New-Item -Path $PROFILE -Type File -Force | Out-Null
-                    Write-Host " - Created new PowerShell profile." -ForegroundColor Gray
                 }
             }
 
-            # Read the current profile content
             $profileContent = if (Test-Path $PROFILE) { Get-Content $PROFILE -Raw } else { "" }
             
-            # Check if the init line already exists in the profile
-            if ($profileContent -match [regex]::Escape($poshInitLine)) {
-                Write-Host " - Oh My Posh ($themeName theme) is already configured in profile." -ForegroundColor Gray
-            } else {
+            if (-not ($profileContent -match [regex]::Escape($poshInitLine))) {
                 if ($IsDryRun) {
-                    Write-Host " - [DRY RUN] Would add $themeName theme configuration to `$PROFILE" -ForegroundColor Cyan
+                    Write-Host " • [DRY RUN] Would add $themeName theme to profile" -ForegroundColor Cyan
                 } else {
-                    Write-Host " - Adding $themeName theme configuration to `$PROFILE..." -ForegroundColor Green
+                    Write-Host " • Adding $themeName theme to profile..." -ForegroundColor Green -NoNewline
                     Add-Content -Path $PROFILE -Value "`n# Oh My Posh Configuration`n$poshInitLine"
-                    Write-Host " - Profile updated successfully." -ForegroundColor Green
+                    Write-Host " ✓" -ForegroundColor Green
                 }
             }
         }
     }
 
-    # Final summary and cleanup messages
+    # Final summary
     if ($IsDryRun) {
-        Write-Host "`n=== DRY RUN Complete! ===" -ForegroundColor Magenta
-        Write-Host "No changes were made. Run without -DryRun to apply changes." -ForegroundColor Yellow
+        Write-Host "`n=== DRY RUN Complete ===" -ForegroundColor Magenta
+        Write-Host "No changes were made. Run without -DryRun to apply." -ForegroundColor Yellow
     } else {
-        Write-Host "`n=== Setup Complete! ===" -ForegroundColor Cyan
-        Write-Host "Note: REBOOT REQUIRED for WSL, Docker, and Visual Studio to finalize installation." -ForegroundColor White -BackgroundColor Red
-        if ($Configuration.ohMyPosh.enabled) {
-            Write-Host "Restart your terminal to see the new Oh My Posh theme." -ForegroundColor Yellow
+        Write-Host "`n=== ✓ Setup Complete ===" -ForegroundColor Green
+        if ($toolsToInstall.Count -gt 0 -or $PreFlightStatus.OhMyPosh.Action -ne "Skip") {
+            Write-Host "Restart your terminal for changes to take effect." -ForegroundColor Yellow
         }
     }
 }
@@ -438,13 +426,11 @@ $preFlightStatus = Get-PreFlightStatus -Configuration $config
 Show-PreFlightStatus -Status $preFlightStatus
 
 if ($DryRun) {
-    Write-Host "Running in DRY RUN mode..." -ForegroundColor Magenta
-    Install-Tools -Configuration $config -IsDryRun $true
+    Install-Tools -Configuration $config -PreFlightStatus $preFlightStatus -IsDryRun $true
 } else {
-    # Ask for confirmation before proceeding
     $proceed = Read-Host "`nProceed with installation? (Y/n)"
     if ($proceed -eq "" -or $proceed -eq "Y" -or $proceed -eq "y") {
-        Install-Tools -Configuration $config -IsDryRun $false
+        Install-Tools -Configuration $config -PreFlightStatus $preFlightStatus -IsDryRun $false
     } else {
         Write-Host "Installation cancelled." -ForegroundColor Yellow
     }
