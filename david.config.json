@@ -55,11 +55,6 @@
       "category": "LANGUAGES & RUNTIMES"
     },
     {
-      "id": "Microsoft.WSL",
-      "name": "Windows Subsystem for Linux",
-      "category": "LANGUAGES & RUNTIMES"
-    },
-    {
       "id": "Mozilla.Firefox",
       "name": "Firefox",
       "category": "BROWSERS"
