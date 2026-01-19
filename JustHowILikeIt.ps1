@@ -128,6 +128,7 @@ function Get-CachedStatus {
             GitHubCLI = $cache.GitHubCLI
             OhMyPosh = $cache.OhMyPosh
             Repository = $cache.Repository
+            FirefoxExtensions = @()
             LastUpdated = $cache.LastUpdated
         }
         
@@ -138,6 +139,17 @@ function Get-CachedStatus {
                 Category = $tool.Category
                 Installed = $tool.Installed
                 Action = $tool.Action
+            }
+        }
+        
+        if ($cache.FirefoxExtensions) {
+            foreach ($ext in $cache.FirefoxExtensions) {
+                $status.FirefoxExtensions += [PSCustomObject]@{
+                    Name = $ext.Name
+                    Id = $ext.Id
+                    Url = $ext.Url
+                    Installed = $ext.Installed
+                }
             }
         }
         
@@ -158,6 +170,7 @@ function Save-StatusToCache {
         GitHubCLI = $Status.GitHubCLI
         OhMyPosh = $Status.OhMyPosh
         Repository = $Status.Repository
+        FirefoxExtensions = $Status.FirefoxExtensions
     }
     
     $cacheData | ConvertTo-Json -Depth 10 | Set-Content $script:CacheFile -Force
@@ -197,11 +210,13 @@ function Get-PreFlightStatus {
         GitHubCLI = $null
         OhMyPosh = $null
         Repository = $null
+        FirefoxExtensions = @()
     }
     
     Write-Host "`n🔍 Running pre-flight checks..." -ForegroundColor Cyan
     
-    $totalChecks = $Configuration.tools.Count + 3  # tools + gh + posh + repo
+    $firefoxExtCount = if ($Configuration.firefoxExtensions) { 1 } else { 0 }
+    $totalChecks = $Configuration.tools.Count + 3 + $firefoxExtCount  # tools + gh + posh + repo + firefox
     $currentCheck = 0
     
     # Check each tool with progress bar
@@ -271,7 +286,7 @@ function Get-PreFlightStatus {
     
     # Check Repository
     $currentCheck++
-    Write-Progress -Activity "Pre-flight checks" -Status "Checking repository..." -PercentComplete 100
+    Write-Progress -Activity "Pre-flight checks" -Status "Checking repository..." -PercentComplete ([int](($currentCheck / $totalChecks) * 100))
     if ($Configuration.repository.owner -and $Configuration.repository.name) {
         $repoPath = [Environment]::ExpandEnvironmentVariables($Configuration.repository.clonePath)
         $repoExists = Test-Path $repoPath
@@ -280,6 +295,41 @@ function Get-PreFlightStatus {
             Path = $repoPath
             Exists = $repoExists
             Action = if ($repoExists) { "Pull updates" } else { "Clone" }
+        }
+    }
+    
+    # Check Firefox Extensions
+    if ($Configuration.firefoxExtensions -and $Configuration.firefoxExtensions.Count -gt 0) {
+        $currentCheck++
+        Write-Progress -Activity "Pre-flight checks" -Status "Checking Firefox extensions..." -PercentComplete ([int](($currentCheck / $totalChecks) * 100))
+        
+        $status.FirefoxExtensions = @()
+        $firefoxProfiles = "$env:APPDATA\Mozilla\Firefox\Profiles"
+        $extensionsDir = $null
+        
+        if (Test-Path $firefoxProfiles) {
+            $defaultProfile = Get-ChildItem $firefoxProfiles -Directory | Where-Object { $_.Name -match "\.default-release$" } | Select-Object -First 1
+            if (-not $defaultProfile) {
+                $defaultProfile = Get-ChildItem $firefoxProfiles -Directory | Select-Object -First 1
+            }
+            if ($defaultProfile) {
+                $extensionsDir = Join-Path $defaultProfile.FullName "extensions"
+            }
+        }
+        
+        foreach ($ext in $Configuration.firefoxExtensions) {
+            $isInstalled = $false
+            if ($extensionsDir) {
+                $extFile = Join-Path $extensionsDir "$($ext.id).xpi"
+                $isInstalled = Test-Path $extFile
+            }
+            
+            $status.FirefoxExtensions += [PSCustomObject]@{
+                Name = $ext.name
+                Id = $ext.id
+                Url = $ext.url
+                Installed = $isInstalled
+            }
         }
     }
     
@@ -338,6 +388,23 @@ function Show-PreFlightStatus {
         Write-Host "   Path: $($Status.Repository.Path)" -ForegroundColor Gray
         Write-Host "   Exists: $(if ($Status.Repository.Exists) { 'Yes' } else { 'No' })" -ForegroundColor $(if ($Status.Repository.Exists) { 'Green' } else { 'Red' })
         Write-Host "   Action: $($Status.Repository.Action)" -ForegroundColor Gray
+    }
+    
+    # Firefox Extensions status
+    if ($Status.FirefoxExtensions) {
+        $extToInstall = ($Status.FirefoxExtensions | Where-Object { -not $_.Installed }).Count
+        $extInstalled = ($Status.FirefoxExtensions | Where-Object { $_.Installed }).Count
+        
+        Write-Host "`n🦊 FIREFOX EXTENSIONS:" -ForegroundColor Yellow
+        Write-Host "   Configured: $($Status.FirefoxExtensions.Count)" -ForegroundColor Gray
+        Write-Host "   Installed: $extInstalled" -ForegroundColor Green
+        Write-Host "   To install: $extToInstall" -ForegroundColor $(if ($extToInstall -gt 0) { 'Cyan' } else { 'Gray' })
+        
+        if ($extToInstall -gt 0) {
+            $Status.FirefoxExtensions | Where-Object { -not $_.Installed } | ForEach-Object {
+                Write-Host "   • $($_.Name)" -ForegroundColor White
+            }
+        }
     }
     
     Write-Host ""
@@ -494,6 +561,57 @@ function Install-Tools {
                     Write-Host " ✓" -ForegroundColor Green
                 }
             }
+        }
+    }
+
+    # --- Firefox Extensions ---
+    if ($Configuration.firefoxExtensions -and $Configuration.firefoxExtensions.Count -gt 0) {
+        Write-Host "`n=== Firefox Extensions ===" -ForegroundColor Cyan
+        
+        # Find Firefox profile directory
+        $firefoxProfiles = "$env:APPDATA\Mozilla\Firefox\Profiles"
+        if (Test-Path $firefoxProfiles) {
+            $defaultProfile = Get-ChildItem $firefoxProfiles -Directory | Where-Object { $_.Name -match "\.default-release$" } | Select-Object -First 1
+            
+            if (-not $defaultProfile) {
+                $defaultProfile = Get-ChildItem $firefoxProfiles -Directory | Select-Object -First 1
+            }
+            
+            if ($defaultProfile) {
+                $extensionsDir = Join-Path $defaultProfile.FullName "extensions"
+                
+                if (-not (Test-Path $extensionsDir)) {
+                    if (-not $IsDryRun) {
+                        New-Item -Path $extensionsDir -ItemType Directory -Force | Out-Null
+                    }
+                }
+                
+                foreach ($ext in $Configuration.firefoxExtensions) {
+                    $extFile = Join-Path $extensionsDir "$($ext.id).xpi"
+                    
+                    if (Test-Path $extFile) {
+                        Write-Host " • $($ext.name) already installed" -ForegroundColor Gray
+                    } else {
+                        if ($IsDryRun) {
+                            Write-Host " • [DRY RUN] Would install $($ext.name)" -ForegroundColor Cyan
+                        } else {
+                            Write-Host " • Installing $($ext.name)..." -ForegroundColor Green -NoNewline
+                            try {
+                                Invoke-WebRequest -Uri $ext.url -OutFile $extFile -UseBasicParsing
+                                Write-Host " ✓" -ForegroundColor Green
+                            } catch {
+                                Write-Host " ✗ (Download failed)" -ForegroundColor Red
+                            }
+                        }
+                    }
+                }
+                
+                Write-Host " ! Restart Firefox to activate extensions" -ForegroundColor Yellow
+            } else {
+                Write-Host " ! No Firefox profile found. Run Firefox once first." -ForegroundColor Yellow
+            }
+        } else {
+            Write-Host " ! Firefox not configured yet. Run Firefox once first." -ForegroundColor Yellow
         }
     }
 
