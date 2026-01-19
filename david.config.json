@@ -11,7 +11,8 @@
   },
   "ohMyPosh": {
     "theme": "marcduiker",
-    "enabled": true
+    "enabled": true,
+    "font": "CaskaydiaCove"
   },
   "tools": [
     {
@@ -23,11 +24,6 @@
       "id": "JanDeDobbeleer.OhMyPosh",
       "name": "Oh My Posh",
       "category": "CORE TERMINAL & SHELL"
-    },
-    {
-      "id": "Microsoft.VisualStudio.2026.Professional",
-      "name": "Visual Studio 2026 Professional",
-      "category": "IDEs & EDITORS"
     },
     {
       "id": "Microsoft.VisualStudioCode",
@@ -50,9 +46,19 @@
       "category": "SOURCE CONTROL & CLI"
     },
     {
+      "id": "GitHub.Copilot",
+      "name": "GitHub Copilot CLI",
+      "category": "SOURCE CONTROL & CLI"
+    },
+    {
       "id": "OpenJS.NodeJS",
       "name": "Node.js",
       "category": "LANGUAGES & RUNTIMES"
+    },
+    {
+      "id": "Ollama.Ollama",
+      "name": "Ollama",
+      "category": "AI & ML"
     },
     {
       "id": "Microsoft.WSL",
@@ -69,9 +75,25 @@
       "name": "Chrome",
       "category": "BROWSERS"
     },
+
+    {
+      "id": "Microsoft.Teams",
+      "name": "Microsoft Teams",
+      "category": "COMMUNICATION"
+    },
+    {
+      "id": "Microsoft.Teams.Classic",
+      "name": "Microsoft Teams Classic (Work/School)",
+      "category": "COMMUNICATION"
+    },
     {
       "id": "KeePassXCTeam.KeePassXC",
       "name": "KeePassXC",
+      "category": "UTILITIES"
+    },
+    {
+      "id": "OpenVPNTechnologies.OpenVPN",
+      "name": "OpenVPN",
       "category": "UTILITIES"
     },
     {
@@ -87,6 +109,26 @@
     {
       "id": "Microsoft.PowerToys",
       "name": "PowerToys",
+      "category": "UTILITIES"
+    },
+    {
+      "id": "MartiCliment.UniGetUI",
+      "name": "UniGetUI",
+      "category": "UTILITIES"
+    },
+    {
+      "id": "Logitech.OptionsPlus",
+      "name": "Logi Options+",
+      "category": "UTILITIES"
+    },
+    {
+      "id": "Ditto.Ditto",
+      "name": "Ditto",
+      "category": "UTILITIES"
+    },
+    {
+      "id": "AntibodySoftware.WizTree",
+      "name": "WizTree",
       "category": "UTILITIES"
     },
     {
@@ -108,6 +150,11 @@
       "id": "PostgreSQL.pgAdmin",
       "name": "pgAdmin 4",
       "category": "DATABASES"
+    },
+    {
+      "id": "Valve.Steam",
+      "name": "Steam",
+      "category": "GAMING"
     }
   ],
   "firefoxExtensions": [
@@ -120,6 +167,18 @@
       "id": "jid1-MnnxcxisBPnSXQ@jetpack",
       "name": "Privacy Badger",
       "url": "https://addons.mozilla.org/firefox/downloads/latest/privacy-badger17/latest.xpi"
+    },
+    {
+      "id": "keepassxc-browser@keepassxc.org",
+      "name": "KeePassXC-Browser",
+      "url": "https://addons.mozilla.org/firefox/downloads/latest/keepassxc-browser/latest.xpi"
+    }
+  ],
+  "dockerImages": [
+    {
+      "image": "rabbitmq",
+      "tag": "3-management",
+      "name": "RabbitMQ with Management UI"
     }
   ]
 }

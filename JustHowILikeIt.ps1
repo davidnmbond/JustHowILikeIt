@@ -44,7 +44,7 @@ Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope Process -Force
 
 # Cache settings
 $script:CacheFile = Join-Path (Split-Path -Parent $PSCommandPath) ".preflight-cache.json"
-$script:CacheMaxAgeMinutes = 60  # Cache valid for 1 hour
+$script:CacheMaxAgeMinutes = 120  # Cache valid for 2 hours
 
 # Function to load and validate configuration
 function Get-Configuration {
@@ -127,8 +127,10 @@ function Get-CachedStatus {
             Tools = @()
             GitHubCLI = $cache.GitHubCLI
             OhMyPosh = $cache.OhMyPosh
+            NerdFont = $cache.NerdFont
             Repository = $cache.Repository
             FirefoxExtensions = @()
+            DockerImages = @()
             LastUpdated = $cache.LastUpdated
         }
         
@@ -137,6 +139,7 @@ function Get-CachedStatus {
                 Name = $tool.Name
                 Id = $tool.Id
                 Category = $tool.Category
+                Version = $tool.Version
                 Installed = $tool.Installed
                 Action = $tool.Action
             }
@@ -149,6 +152,19 @@ function Get-CachedStatus {
                     Id = $ext.Id
                     Url = $ext.Url
                     Installed = $ext.Installed
+                }
+            }
+        }
+        
+        if ($cache.DockerImages) {
+            foreach ($img in $cache.DockerImages) {
+                $status.DockerImages += [PSCustomObject]@{
+                    Name = $img.Name
+                    Image = $img.Image
+                    Tag = $img.Tag
+                    FullImage = $img.FullImage
+                    Installed = $img.Installed
+                    Action = $img.Action
                 }
             }
         }
@@ -169,8 +185,10 @@ function Save-StatusToCache {
         Tools = $Status.Tools
         GitHubCLI = $Status.GitHubCLI
         OhMyPosh = $Status.OhMyPosh
+        NerdFont = $Status.NerdFont
         Repository = $Status.Repository
         FirefoxExtensions = $Status.FirefoxExtensions
+        DockerImages = $Status.DockerImages
     }
     
     $cacheData | ConvertTo-Json -Depth 10 | Set-Content $script:CacheFile -Force
@@ -193,7 +211,13 @@ function Test-ToolInstalled {
     }
     
     try {
-        $checkInstalled = winget list --id $ToolId --exact --source winget 2>$null | Out-String
+        # Try with --exact first, then fall back to partial match
+        $checkInstalled = winget list --id $ToolId --exact 2>$null | Out-String
+        if ($checkInstalled -match [regex]::Escape($ToolId)) {
+            return $true
+        }
+        # Fallback: check without --exact for packages that may have different source tracking
+        $checkInstalled = winget list $ToolId 2>$null | Out-String
         return ($checkInstalled -match [regex]::Escape($ToolId))
     }
     catch {
@@ -203,20 +227,29 @@ function Test-ToolInstalled {
 
 # Function to perform pre-flight checks with progress bar
 function Get-PreFlightStatus {
-    param($Configuration)
+    param(
+        $Configuration,
+        [switch]$Silent
+    )
     
     $status = @{
         Tools = @()
         GitHubCLI = $null
         OhMyPosh = $null
+        NerdFont = $null
         Repository = $null
         FirefoxExtensions = @()
+        DockerImages = @()
     }
     
-    Write-Host "`n🔍 Running pre-flight checks..." -ForegroundColor Cyan
+    if (-not $Silent) {
+        Write-Host "`n🔍 Running pre-flight checks..." -ForegroundColor Cyan
+    }
     
     $firefoxExtCount = if ($Configuration.firefoxExtensions) { 1 } else { 0 }
-    $totalChecks = $Configuration.tools.Count + 3 + $firefoxExtCount  # tools + gh + posh + repo + firefox
+    $fontCheck = if ($Configuration.ohMyPosh.font) { 1 } else { 0 }
+    $dockerCheck = if ($Configuration.dockerImages) { 1 } else { 0 }
+    $totalChecks = $Configuration.tools.Count + 3 + $firefoxExtCount + $fontCheck + $dockerCheck  # tools + gh + posh + repo + firefox + font + docker
     $currentCheck = 0
     
     # Check each tool with progress bar
@@ -226,12 +259,20 @@ function Get-PreFlightStatus {
         Write-Progress -Activity "Pre-flight checks" -Status "Checking $($tool.name)..." -PercentComplete $percentComplete
         
         $isInstalled = Test-ToolInstalled -ToolId $tool.id
+        $version = if ($tool.version) { $tool.version } else { $null }
+        $action = if ($isInstalled) { 
+            if ($version) { "Skip (pinned to $version)" } else { "Skip" }
+        } else { 
+            if ($version) { "Install v$version" } else { "Install" }
+        }
+        
         $status.Tools += [PSCustomObject]@{
             Name = $tool.name
             Id = $tool.id
             Category = $tool.category
+            Version = $version
             Installed = $isInstalled
-            Action = if ($isInstalled) { "Skip" } else { "Install" }
+            Action = $action
         }
     }
     
@@ -280,6 +321,51 @@ function Get-PreFlightStatus {
                 Configured = $false
                 Theme = $Configuration.ohMyPosh.theme
                 Action = if ($poshInstalled) { "Configure theme" } else { "Will be installed & configured" }
+            }
+        }
+        
+        # Check Nerd Font
+        $fontName = $Configuration.ohMyPosh.font
+        if ($fontName) {
+            $currentCheck++
+            Write-Progress -Activity "Pre-flight checks" -Status "Checking Nerd Font..." -PercentComplete ([int](($currentCheck / $totalChecks) * 100))
+            
+            # Check user fonts folder
+            $userFontsPath = "$env:LOCALAPPDATA\Microsoft\Windows\Fonts"
+            $fontInstalled = $false
+            if (Test-Path $userFontsPath) {
+                $fontInstalled = (Get-ChildItem $userFontsPath -Filter "*$fontName*" -ErrorAction SilentlyContinue).Count -gt 0
+            }
+            # Also check system fonts
+            if (-not $fontInstalled) {
+                $fontInstalled = (Get-ChildItem "C:\Windows\Fonts" -Filter "*$fontName*" -ErrorAction SilentlyContinue).Count -gt 0
+            }
+            # Also check via .NET InstalledFontCollection
+            if (-not $fontInstalled) {
+                try {
+                    Add-Type -AssemblyName System.Drawing
+                    $fonts = (New-Object System.Drawing.Text.InstalledFontCollection).Families
+                    $fontInstalled = ($fonts | Where-Object { $_.Name -match $fontName }).Count -gt 0
+                } catch {}
+            }
+            # Also check if VS Code is already configured with this font (means it was installed)
+            if (-not $fontInstalled) {
+                $vscodeSettingsPath = "$env:APPDATA\Code\User\settings.json"
+                if (Test-Path $vscodeSettingsPath) {
+                    try {
+                        $vscodeSettings = Get-Content $vscodeSettingsPath -Raw | ConvertFrom-Json
+                        $terminalFont = $vscodeSettings.'terminal.integrated.fontFamily'
+                        if ($terminalFont -match $fontName) {
+                            $fontInstalled = $true
+                        }
+                    } catch {}
+                }
+            }
+            
+            $status.NerdFont = [PSCustomObject]@{
+                Name = $fontName
+                Installed = $fontInstalled
+                Action = if ($fontInstalled) { "Skip" } else { "Install font" }
             }
         }
     }
@@ -333,6 +419,44 @@ function Get-PreFlightStatus {
         }
     }
     
+    # Check Docker Images
+    if ($Configuration.dockerImages -and $Configuration.dockerImages.Count -gt 0) {
+        $currentCheck++
+        Write-Progress -Activity "Pre-flight checks" -Status "Checking Docker images..." -PercentComplete ([int](($currentCheck / $totalChecks) * 100))
+        
+        $dockerAvailable = Get-Command docker -ErrorAction SilentlyContinue
+        if ($dockerAvailable) {
+            $existingImages = docker images --format "{{.Repository}}:{{.Tag}}" 2>$null
+            
+            foreach ($img in $Configuration.dockerImages) {
+                $tag = if ($img.tag) { $img.tag } else { "latest" }
+                $fullImage = "$($img.image):$tag"
+                $isPresent = $existingImages -contains $fullImage
+                
+                $status.DockerImages += [PSCustomObject]@{
+                    Name = $img.name
+                    Image = $img.image
+                    Tag = $tag
+                    FullImage = $fullImage
+                    Installed = $isPresent
+                    Action = if ($isPresent) { "Skip" } else { "Pull" }
+                }
+            }
+        } else {
+            foreach ($img in $Configuration.dockerImages) {
+                $tag = if ($img.tag) { $img.tag } else { "latest" }
+                $status.DockerImages += [PSCustomObject]@{
+                    Name = $img.name
+                    Image = $img.image
+                    Tag = $tag
+                    FullImage = "$($img.image):$tag"
+                    Installed = $false
+                    Action = "Docker not available"
+                }
+            }
+        }
+    }
+    
     Write-Progress -Activity "Pre-flight checks" -Completed
     
     return $status
@@ -344,66 +468,79 @@ function Show-PreFlightStatus {
     
     Write-Host "`n╔═══════════════════════════════════════════════════════════════════════╗" -ForegroundColor Cyan
     Write-Host "║                    PRE-FLIGHT CHECK RESULTS                           ║" -ForegroundColor Cyan
-    Write-Host "╚═══════════════════════════════════════════════════════════════════════╝`n" -ForegroundColor Cyan
+    Write-Host "╚═══════════════════════════════════════════════════════════════════════╝" -ForegroundColor Cyan
     
     # Tools summary
     $toInstall = ($Status.Tools | Where-Object { $_.Action -eq "Install" }).Count
-    $alreadyInstalled = ($Status.Tools | Where-Object { $_.Action -eq "Skip" }).Count
-    
-    Write-Host "📦 TOOLS SUMMARY:" -ForegroundColor Yellow
-    Write-Host "   Total configured: $($Status.Tools.Count)" -ForegroundColor Gray
-    Write-Host "   Already installed: $alreadyInstalled" -ForegroundColor Green
-    Write-Host "   To be installed: $toInstall" -ForegroundColor Cyan
-    
+    $alreadyInstalled = ($Status.Tools | Where-Object { $_.Action -eq "Skip" -or $_.Action -match "^Skip" }).Count
+    $toolsColor = if ($toInstall -gt 0) { 'Yellow' } else { 'Green' }
+    Write-Host "📦 Tools: $alreadyInstalled/$($Status.Tools.Count) installed" -ForegroundColor $toolsColor -NoNewline
     if ($toInstall -gt 0) {
-        Write-Host "`n   Tools to install:" -ForegroundColor Cyan
-        $Status.Tools | Where-Object { $_.Action -eq "Install" } | ForEach-Object {
-            Write-Host "   • $($_.Name) ($($_.Id))" -ForegroundColor White
-        }
-    }
-    
-    # GitHub CLI status
-    Write-Host "`n🔧 GITHUB CLI:" -ForegroundColor Yellow
-    if ($Status.GitHubCLI.Installed) {
-        Write-Host "   Status: Installed" -ForegroundColor Green
-        Write-Host "   Authenticated: $(if ($Status.GitHubCLI.Authenticated) { 'Yes' } else { 'No' })" -ForegroundColor $(if ($Status.GitHubCLI.Authenticated) { 'Green' } else { 'Red' })
-        Write-Host "   Action: $($Status.GitHubCLI.Action)" -ForegroundColor Gray
+        $toolNames = ($Status.Tools | Where-Object { $_.Action -eq "Install" } | ForEach-Object { $_.Name }) -join ", "
+        Write-Host " (to install: $toolNames)" -ForegroundColor Cyan
     } else {
-        Write-Host "   Status: Not installed" -ForegroundColor Red
-        Write-Host "   Action: $($Status.GitHubCLI.Action)" -ForegroundColor Cyan
+        Write-Host ""
     }
     
-    # Oh My Posh status
+    # GitHub CLI status - one line
+    $ghStatus = if ($Status.GitHubCLI.Installed -and $Status.GitHubCLI.Authenticated) { "✓ Authenticated" } 
+                elseif ($Status.GitHubCLI.Installed) { "⚠ Not authenticated" } 
+                else { "✗ Not installed" }
+    $ghColor = if ($Status.GitHubCLI.Installed -and $Status.GitHubCLI.Authenticated) { 'Green' } 
+               elseif ($Status.GitHubCLI.Installed) { 'Yellow' } 
+               else { 'Red' }
+    Write-Host "🔧 GitHub CLI: $ghStatus" -ForegroundColor $ghColor
+    
+    # Oh My Posh status - one line
     if ($Status.OhMyPosh) {
-        Write-Host "`n🎨 OH MY POSH:" -ForegroundColor Yellow
-        Write-Host "   Installed: $(if ($Status.OhMyPosh.Installed) { 'Yes' } else { 'No' })" -ForegroundColor $(if ($Status.OhMyPosh.Installed) { 'Green' } else { 'Red' })
-        Write-Host "   Configured: $(if ($Status.OhMyPosh.Configured) { 'Yes' } else { 'No' })" -ForegroundColor $(if ($Status.OhMyPosh.Configured) { 'Green' } else { 'Red' })
-        Write-Host "   Theme: $($Status.OhMyPosh.Theme)" -ForegroundColor Gray
-        Write-Host "   Action: $($Status.OhMyPosh.Action)" -ForegroundColor Gray
+        $poshStatus = if ($Status.OhMyPosh.Installed -and $Status.OhMyPosh.Configured) { "✓ $($Status.OhMyPosh.Theme) theme" }
+                      elseif ($Status.OhMyPosh.Installed) { "⚠ Needs config" }
+                      else { "✗ Not installed" }
+        $poshColor = if ($Status.OhMyPosh.Installed -and $Status.OhMyPosh.Configured) { 'Green' } 
+                     elseif ($Status.OhMyPosh.Installed) { 'Yellow' } 
+                     else { 'Red' }
+        Write-Host "🎨 Oh My Posh: $poshStatus" -ForegroundColor $poshColor
     }
     
-    # Repository status
+    # Nerd Font status - one line
+    if ($Status.NerdFont) {
+        $fontStatus = if ($Status.NerdFont.Installed) { "✓ $($Status.NerdFont.Name)" } else { "✗ $($Status.NerdFont.Name) needs install" }
+        $fontColor = if ($Status.NerdFont.Installed) { 'Green' } else { 'Yellow' }
+        Write-Host "🔤 Nerd Font: $fontStatus" -ForegroundColor $fontColor
+    }
+    
+    # Repository status - one line
     if ($Status.Repository) {
-        Write-Host "`n📁 REPOSITORY:" -ForegroundColor Yellow
-        Write-Host "   Path: $($Status.Repository.Path)" -ForegroundColor Gray
-        Write-Host "   Exists: $(if ($Status.Repository.Exists) { 'Yes' } else { 'No' })" -ForegroundColor $(if ($Status.Repository.Exists) { 'Green' } else { 'Red' })
-        Write-Host "   Action: $($Status.Repository.Action)" -ForegroundColor Gray
+        $repoStatus = if ($Status.Repository.Exists) { "✓ $($Status.Repository.Path)" } else { "✗ Needs clone" }
+        $repoColor = if ($Status.Repository.Exists) { 'Green' } else { 'Yellow' }
+        Write-Host "📁 Repository: $repoStatus" -ForegroundColor $repoColor
     }
     
-    # Firefox Extensions status
+    # Firefox Extensions status - one line
     if ($Status.FirefoxExtensions) {
         $extToInstall = ($Status.FirefoxExtensions | Where-Object { -not $_.Installed }).Count
         $extInstalled = ($Status.FirefoxExtensions | Where-Object { $_.Installed }).Count
-        
-        Write-Host "`n🦊 FIREFOX EXTENSIONS:" -ForegroundColor Yellow
-        Write-Host "   Configured: $($Status.FirefoxExtensions.Count)" -ForegroundColor Gray
-        Write-Host "   Installed: $extInstalled" -ForegroundColor Green
-        Write-Host "   To install: $extToInstall" -ForegroundColor $(if ($extToInstall -gt 0) { 'Cyan' } else { 'Gray' })
-        
+        $extColor = if ($extToInstall -gt 0) { 'Yellow' } else { 'Green' }
+        Write-Host "🦊 Firefox Extensions: $extInstalled/$($Status.FirefoxExtensions.Count) installed" -ForegroundColor $extColor -NoNewline
         if ($extToInstall -gt 0) {
-            $Status.FirefoxExtensions | Where-Object { -not $_.Installed } | ForEach-Object {
-                Write-Host "   • $($_.Name)" -ForegroundColor White
-            }
+            $extNames = ($Status.FirefoxExtensions | Where-Object { -not $_.Installed } | ForEach-Object { $_.Name }) -join ", "
+            Write-Host " (to install: $extNames)" -ForegroundColor Cyan
+        } else {
+            Write-Host ""
+        }
+    }
+    
+    # Docker Images status - one line
+    if ($Status.DockerImages -and $Status.DockerImages.Count -gt 0) {
+        $imgToPull = ($Status.DockerImages | Where-Object { -not $_.Installed }).Count
+        $imgInstalled = ($Status.DockerImages | Where-Object { $_.Installed }).Count
+        $imgColor = if ($imgToPull -gt 0) { 'Yellow' } else { 'Green' }
+        Write-Host "🐳 Docker Images: $imgInstalled/$($Status.DockerImages.Count) present" -ForegroundColor $imgColor -NoNewline
+        if ($imgToPull -gt 0) {
+            $imgNames = ($Status.DockerImages | Where-Object { -not $_.Installed } | ForEach-Object { $_.Name }) -join ", "
+            Write-Host " (to pull: $imgNames)" -ForegroundColor Cyan
+        } else {
+            Write-Host ""
         }
     }
     
@@ -454,10 +591,18 @@ function Install-Tools {
     
     foreach ($tool in $toolsToInstall) {
         if ($IsDryRun) {
-            Write-Host " • [DRY RUN] Would install $($tool.Name)" -ForegroundColor Cyan
+            $versionInfo = if ($tool.Version) { " v$($tool.Version)" } else { "" }
+            Write-Host " • [DRY RUN] Would install $($tool.Name)$versionInfo" -ForegroundColor Cyan
         } else {
-            Write-Host " • Installing $($tool.Name)..." -ForegroundColor Green -NoNewline
-            winget install --id $tool.Id --silent --accept-package-agreements --accept-source-agreements 2>&1 | Out-Null
+            $versionInfo = if ($tool.Version) { " v$($tool.Version)" } else { "" }
+            Write-Host " • Installing $($tool.Name)$versionInfo..." -ForegroundColor Green -NoNewline
+            
+            $wingetArgs = @("install", "--id", $tool.Id, "--silent", "--accept-package-agreements", "--accept-source-agreements")
+            if ($tool.Version) {
+                $wingetArgs += @("--version", $tool.Version)
+            }
+            
+            & winget @wingetArgs 2>&1 | Out-Null
             
             if ($LASTEXITCODE -eq 0) {
                 Write-Host " ✓" -ForegroundColor Green
@@ -564,6 +709,46 @@ function Install-Tools {
         }
     }
 
+    # --- Nerd Font Installation ---
+    if ($PreFlightStatus.NerdFont -and $PreFlightStatus.NerdFont.Action -ne "Skip") {
+        Write-Host "`n=== Nerd Font Installation ===" -ForegroundColor Cyan
+        $fontName = $Configuration.ohMyPosh.font
+        if ($fontName) {
+            if ($IsDryRun) {
+                Write-Host " • [DRY RUN] Would install $fontName Nerd Font" -ForegroundColor Cyan
+            } else {
+                Write-Host " • Installing $fontName Nerd Font..." -ForegroundColor Green -NoNewline
+                try {
+                    $result = & oh-my-posh font install $fontName --headless 2>&1
+                    Write-Host " ✓" -ForegroundColor Green
+                }
+                catch {
+                    Write-Host " ✗" -ForegroundColor Red
+                    Write-Host "   Error: $_" -ForegroundColor Red
+                }
+            }
+            
+            # Configure VS Code terminal font
+            $vscodeSettingsPath = "$env:APPDATA\Code\User\settings.json"
+            if (Test-Path $vscodeSettingsPath) {
+                $vscodeSettings = Get-Content $vscodeSettingsPath -Raw | ConvertFrom-Json
+                $fontFamily = "$fontName Nerd Font"
+                $currentFont = $vscodeSettings.'terminal.integrated.fontFamily'
+                
+                if ($currentFont -ne $fontFamily) {
+                    if ($IsDryRun) {
+                        Write-Host " • [DRY RUN] Would set VS Code terminal font to '$fontFamily'" -ForegroundColor Cyan
+                    } else {
+                        Write-Host " • Setting VS Code terminal font..." -ForegroundColor Green -NoNewline
+                        $vscodeSettings | Add-Member -NotePropertyName 'terminal.integrated.fontFamily' -NotePropertyValue $fontFamily -Force
+                        $vscodeSettings | ConvertTo-Json -Depth 10 | Set-Content $vscodeSettingsPath -Encoding UTF8
+                        Write-Host " ✓" -ForegroundColor Green
+                    }
+                }
+            }
+        }
+    }
+
     # --- Firefox Extensions ---
     if ($Configuration.firefoxExtensions -and $Configuration.firefoxExtensions.Count -gt 0) {
         Write-Host "`n=== Firefox Extensions ===" -ForegroundColor Cyan
@@ -615,6 +800,39 @@ function Install-Tools {
         }
     }
 
+    # --- Docker Images ---
+    if ($Configuration.dockerImages -and $Configuration.dockerImages.Count -gt 0) {
+        Write-Host "`n=== Docker Images ===" -ForegroundColor Cyan
+        
+        $dockerAvailable = Get-Command docker -ErrorAction SilentlyContinue
+        if ($dockerAvailable) {
+            foreach ($img in $Configuration.dockerImages) {
+                $tag = if ($img.tag) { $img.tag } else { "latest" }
+                $fullImage = "$($img.image):$tag"
+                
+                $imgStatus = $PreFlightStatus.DockerImages | Where-Object { $_.FullImage -eq $fullImage }
+                
+                if ($imgStatus -and $imgStatus.Installed) {
+                    Write-Host " • $($img.name) already present" -ForegroundColor Gray
+                } else {
+                    if ($IsDryRun) {
+                        Write-Host " • [DRY RUN] Would pull $fullImage" -ForegroundColor Cyan
+                    } else {
+                        Write-Host " • Pulling $($img.name) ($fullImage)..." -ForegroundColor Green
+                        $pullResult = docker pull $fullImage 2>&1
+                        if ($LASTEXITCODE -eq 0) {
+                            Write-Host "   ✓ Pulled successfully" -ForegroundColor Green
+                        } else {
+                            Write-Host "   ✗ Pull failed" -ForegroundColor Red
+                        }
+                    }
+                }
+            }
+        } else {
+            Write-Host " ! Docker is not available. Install Docker Desktop first." -ForegroundColor Yellow
+        }
+    }
+
     # Final summary
     if ($IsDryRun) {
         Write-Host "`n=== DRY RUN Complete ===" -ForegroundColor Magenta
@@ -625,10 +843,30 @@ function Install-Tools {
             Write-Host "Restart your terminal for changes to take effect." -ForegroundColor Yellow
         }
         
-        # Refresh and save cache after installation
-        Write-Host "`nUpdating status cache..." -ForegroundColor Gray
-        $freshStatus = Get-PreFlightStatus -Configuration $Configuration
-        Save-StatusToCache -Status $freshStatus
+        # Update cache incrementally - just mark installed items as done
+        # Update tools that were just installed
+        foreach ($tool in $toolsToInstall) {
+            $cachedTool = $PreFlightStatus.Tools | Where-Object { $_.Id -eq $tool.Id }
+            if ($cachedTool) {
+                $cachedTool.Installed = $true
+                $cachedTool.Action = "Skip"
+            }
+        }
+        # Update Nerd Font if it was installed
+        if ($PreFlightStatus.NerdFont -and $PreFlightStatus.NerdFont.Action -ne "Skip") {
+            $PreFlightStatus.NerdFont.Installed = $true
+            $PreFlightStatus.NerdFont.Action = "Skip"
+        }
+        # Update Docker images that were pulled
+        if ($PreFlightStatus.DockerImages) {
+            foreach ($img in $PreFlightStatus.DockerImages) {
+                if ($img.Action -eq "Pull") {
+                    $img.Installed = $true
+                    $img.Action = "Skip"
+                }
+            }
+        }
+        Save-StatusToCache -Status $PreFlightStatus
     }
 }
 
@@ -640,6 +878,61 @@ if (-not $NoCache -and (Test-CacheValid)) {
     $preFlightStatus = Get-CachedStatus
     if ($preFlightStatus) {
         $cacheAge = [Math]::Round(((Get-Date) - [DateTime]::Parse($preFlightStatus.LastUpdated)).TotalMinutes)
+        
+        # Check for new items in config that aren't in cache
+        $newTools = @()
+        foreach ($tool in $config.tools) {
+            $cached = $preFlightStatus.Tools | Where-Object { $_.Id -eq $tool.id }
+            if (-not $cached) {
+                # New tool - check if installed
+                Write-Host "🔍 Checking new tool: $($tool.name)..." -ForegroundColor Cyan -NoNewline
+                $isInstalled = Test-ToolInstalled -ToolId $tool.id
+                $version = if ($tool.version) { $tool.version } else { $null }
+                $action = if ($isInstalled) { "Skip" } else { "Install" }
+                $preFlightStatus.Tools += [PSCustomObject]@{
+                    Name = $tool.name
+                    Id = $tool.id
+                    Category = $tool.category
+                    Version = $version
+                    Installed = $isInstalled
+                    Action = $action
+                }
+                Write-Host $(if ($isInstalled) { " ✓ installed" } else { " needs install" }) -ForegroundColor $(if ($isInstalled) { 'Green' } else { 'Yellow' })
+                $newTools += $tool.name
+            }
+        }
+        
+        # Check for new Docker images
+        if ($config.dockerImages) {
+            foreach ($img in $config.dockerImages) {
+                $tag = if ($img.tag) { $img.tag } else { "latest" }
+                $fullImage = "$($img.image):$tag"
+                $cached = $preFlightStatus.DockerImages | Where-Object { $_.FullImage -eq $fullImage }
+                if (-not $cached) {
+                    Write-Host "🔍 Checking new Docker image: $($img.name)..." -ForegroundColor Cyan -NoNewline
+                    $dockerAvailable = Get-Command docker -ErrorAction SilentlyContinue
+                    $isPresent = $false
+                    if ($dockerAvailable) {
+                        $existingImages = docker images --format "{{.Repository}}:{{.Tag}}" 2>$null
+                        $isPresent = $existingImages -contains $fullImage
+                    }
+                    $preFlightStatus.DockerImages += [PSCustomObject]@{
+                        Name = $img.name
+                        Image = $img.image
+                        Tag = $tag
+                        FullImage = $fullImage
+                        Installed = $isPresent
+                        Action = if ($isPresent) { "Skip" } else { "Pull" }
+                    }
+                    Write-Host $(if ($isPresent) { " ✓ present" } else { " needs pull" }) -ForegroundColor $(if ($isPresent) { 'Green' } else { 'Yellow' })
+                }
+            }
+        }
+        
+        if ($newTools.Count -gt 0) {
+            Save-StatusToCache -Status $preFlightStatus
+        }
+        
         Write-Host "📋 Using cached status (${cacheAge}m old). Use -NoCache to refresh." -ForegroundColor Gray
         $usedCache = $true
     }
@@ -655,10 +948,5 @@ Show-PreFlightStatus -Status $preFlightStatus
 if ($DryRun) {
     Install-Tools -Configuration $config -PreFlightStatus $preFlightStatus -IsDryRun $true
 } else {
-    $proceed = Read-Host "`nProceed with installation? (Y/n)"
-    if ($proceed -eq "" -or $proceed -eq "Y" -or $proceed -eq "y") {
-        Install-Tools -Configuration $config -PreFlightStatus $preFlightStatus -IsDryRun $false
-    } else {
-        Write-Host "Installation cancelled." -ForegroundColor Yellow
-    }
+    Install-Tools -Configuration $config -PreFlightStatus $preFlightStatus -IsDryRun $false
 }
