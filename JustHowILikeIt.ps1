@@ -91,6 +91,16 @@ function Test-ToolInstalled {
         [string]$ToolId
     )
     
+    # Special case checks for tools that may not be tracked by winget
+    switch ($ToolId) {
+        "Microsoft.WSL" {
+            # Check if wsl command exists
+            if (Get-Command wsl -ErrorAction SilentlyContinue) {
+                return $true
+            }
+        }
+    }
+    
     try {
         $checkInstalled = winget list --id $ToolId --exact --source winget 2>$null | Out-String
         return ($checkInstalled -match [regex]::Escape($ToolId))
