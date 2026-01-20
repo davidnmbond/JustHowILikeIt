@@ -159,6 +159,11 @@
       "id": "RustDesk.RustDesk",
       "name": "RustDesk",
       "category": "UTILITIES"
+    },
+    {
+      "id": "Toggl.TogglTrack",
+      "name": "Toggl Track",
+      "category": "UTILITIES"
     }
   ],
   "blockedTools": [

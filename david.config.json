@@ -215,6 +215,11 @@
       "id": "Insecure.Nmap",
       "name": "Nmap",
       "category": "UTILITIES"
+    },
+    {
+      "id": "Toggl.TogglTrack",
+      "name": "Toggl Track",
+      "category": "UTILITIES"
     }
   ],
   "blockedTools": [
