@@ -125,10 +125,12 @@ function Get-CachedStatus {
         # Convert back to proper objects
         $status = @{
             Tools = @()
+            BlockedTools = @()
             GitHubCLI = $cache.GitHubCLI
             OhMyPosh = $cache.OhMyPosh
             NerdFont = $cache.NerdFont
             Repository = $cache.Repository
+            VSCodeExtensions = @()
             FirefoxExtensions = @()
             DockerImages = @()
             DotnetTools = @()
@@ -145,6 +147,28 @@ function Get-CachedStatus {
                 Version = $tool.Version
                 Installed = $tool.Installed
                 Action = $tool.Action
+            }
+        }
+        
+        if ($cache.BlockedTools) {
+            foreach ($tool in $cache.BlockedTools) {
+                $status.BlockedTools += [PSCustomObject]@{
+                    Name = $tool.Name
+                    Id = $tool.Id
+                    Installed = $tool.Installed
+                    Action = $tool.Action
+                }
+            }
+        }
+        
+        if ($cache.VSCodeExtensions) {
+            foreach ($ext in $cache.VSCodeExtensions) {
+                $status.VSCodeExtensions += [PSCustomObject]@{
+                    Name = $ext.Name
+                    Id = $ext.Id
+                    Installed = $ext.Installed
+                    Action = $ext.Action
+                }
             }
         }
         
@@ -186,10 +210,12 @@ function Save-StatusToCache {
     $cacheData = @{
         LastUpdated = (Get-Date).ToString("o")
         Tools = $Status.Tools
+        BlockedTools = $Status.BlockedTools
         GitHubCLI = $Status.GitHubCLI
         OhMyPosh = $Status.OhMyPosh
         NerdFont = $Status.NerdFont
         Repository = $Status.Repository
+        VSCodeExtensions = $Status.VSCodeExtensions
         FirefoxExtensions = $Status.FirefoxExtensions
         DockerImages = $Status.DockerImages
         DotnetTools = $Status.DotnetTools
@@ -239,12 +265,15 @@ function Get-PreFlightStatus {
     
     $status = @{
         Tools = @()
+        BlockedTools = @()
         GitHubCLI = $null
         OhMyPosh = $null
         NerdFont = $null
         Repository = $null
+        VSCodeExtensions = @()
         FirefoxExtensions = @()
         DockerImages = @()
+        DotnetTools = @()
         Backups = @()
         WindowsSettings = $null
     }
@@ -254,11 +283,13 @@ function Get-PreFlightStatus {
     }
     
     $firefoxExtCount = if ($Configuration.firefoxExtensions) { 1 } else { 0 }
+    $vscodeExtCount = if ($Configuration.vscodeExtensions) { 1 } else { 0 }
     $fontCheck = if ($Configuration.fonts.nerdFont -or $Configuration.ohMyPosh.font) { 1 } else { 0 }
     $dockerCheck = if ($Configuration.dockerImages) { 1 } else { 0 }
     $backupCheck = if ($Configuration.backups) { 1 } else { 0 }
     $windowsSettingsCheck = if ($Configuration.windowsSettings) { 1 } else { 0 }
-    $totalChecks = $Configuration.tools.Count + 3 + $firefoxExtCount + $fontCheck + $dockerCheck + $backupCheck + $windowsSettingsCheck
+    $blockedToolsCount = if ($Configuration.blockedTools) { $Configuration.blockedTools.Count } else { 0 }
+    $totalChecks = $Configuration.tools.Count + $blockedToolsCount + 3 + $vscodeExtCount + $firefoxExtCount + $fontCheck + $dockerCheck + $backupCheck + $windowsSettingsCheck
     $currentCheck = 0
     
     # Check each tool with progress bar
@@ -282,6 +313,25 @@ function Get-PreFlightStatus {
             Version = $version
             Installed = $isInstalled
             Action = $action
+        }
+    }
+    
+    # Check blocked tools (tools that should NOT be installed)
+    if ($Configuration.blockedTools -and $Configuration.blockedTools.Count -gt 0) {
+        foreach ($tool in $Configuration.blockedTools) {
+            $currentCheck++
+            $percentComplete = [int](($currentCheck / $totalChecks) * 100)
+            Write-Progress -Activity "Pre-flight checks" -Status "Checking blocked: $($tool.name)..." -PercentComplete $percentComplete
+            
+            $isInstalled = Test-ToolInstalled -ToolId $tool.id
+            $action = if ($isInstalled) { "Uninstall" } else { "Skip" }
+            
+            $status.BlockedTools += [PSCustomObject]@{
+                Name = $tool.name
+                Id = $tool.id
+                Installed = $isInstalled
+                Action = $action
+            }
         }
     }
     
@@ -387,8 +437,37 @@ function Get-PreFlightStatus {
             
             $status.NerdFont = [PSCustomObject]@{
                 Name = $fontName
+                TerminalFontName = $terminalFontName
                 Installed = $fontInstalled
                 Action = if ($fontInstalled) { "Skip" } else { "Install font" }
+            }
+            
+            # Check VS Code terminal font configuration
+            if ($Configuration.fonts.configureVSCode -ne $false) {
+                $vscodeSettingsPath = "$env:APPDATA\Code\User\settings.json"
+                $vscodeTerminalFontConfigured = $false
+                if (Test-Path $vscodeSettingsPath) {
+                    try {
+                        $vscodeSettings = Get-Content $vscodeSettingsPath -Raw | ConvertFrom-Json
+                        $currentTerminalFont = $vscodeSettings.'terminal.integrated.fontFamily'
+                        $vscodeTerminalFontConfigured = ($currentTerminalFont -eq $terminalFontName)
+                    } catch {}
+                }
+                $status.NerdFont | Add-Member -NotePropertyName 'VSCodeConfigured' -NotePropertyValue $vscodeTerminalFontConfigured -Force
+            }
+            
+            # Check Windows Terminal font configuration
+            if ($Configuration.fonts.configureWindowsTerminal -ne $false) {
+                $wtSettingsPath = "$env:LOCALAPPDATA\Packages\Microsoft.WindowsTerminal_8wekyb3d8bbwe\LocalState\settings.json"
+                $wtFontConfigured = $false
+                if (Test-Path $wtSettingsPath) {
+                    try {
+                        $wtSettings = Get-Content $wtSettingsPath -Raw | ConvertFrom-Json
+                        $wtFont = $wtSettings.profiles.defaults.font.face
+                        $wtFontConfigured = ($wtFont -eq $terminalFontName)
+                    } catch {}
+                }
+                $status.NerdFont | Add-Member -NotePropertyName 'WindowsTerminalConfigured' -NotePropertyValue $wtFontConfigured -Force
             }
         }
     }
@@ -404,6 +483,37 @@ function Get-PreFlightStatus {
             Path = $repoPath
             Exists = $repoExists
             Action = if ($repoExists) { "Pull updates" } else { "Clone" }
+        }
+    }
+    
+    # Check VS Code Extensions
+    if ($Configuration.vscodeExtensions -and $Configuration.vscodeExtensions.Count -gt 0) {
+        $currentCheck++
+        Write-Progress -Activity "Pre-flight checks" -Status "Checking VS Code extensions..." -PercentComplete ([int](($currentCheck / $totalChecks) * 100))
+        
+        $codeAvailable = Get-Command code -ErrorAction SilentlyContinue
+        if ($codeAvailable) {
+            $installedExtensions = code --list-extensions 2>$null | ForEach-Object { $_.ToLower() }
+            
+            foreach ($ext in $Configuration.vscodeExtensions) {
+                $isInstalled = $installedExtensions -contains $ext.id.ToLower()
+                
+                $status.VSCodeExtensions += [PSCustomObject]@{
+                    Name = $ext.name
+                    Id = $ext.id
+                    Installed = $isInstalled
+                    Action = if ($isInstalled) { "Skip" } else { "Install" }
+                }
+            }
+        } else {
+            foreach ($ext in $Configuration.vscodeExtensions) {
+                $status.VSCodeExtensions += [PSCustomObject]@{
+                    Name = $ext.name
+                    Id = $ext.id
+                    Installed = $false
+                    Action = "VS Code not available"
+                }
+            }
         }
     }
     
@@ -717,6 +827,20 @@ function Show-PreFlightStatus {
         Write-Host ""
     }
     
+    # Blocked tools summary
+    if ($Status.BlockedTools -and $Status.BlockedTools.Count -gt 0) {
+        $toUninstall = ($Status.BlockedTools | Where-Object { $_.Action -eq "Uninstall" }).Count
+        $notPresent = ($Status.BlockedTools | Where-Object { $_.Action -eq "Skip" }).Count
+        $blockedColor = if ($toUninstall -gt 0) { 'Yellow' } else { 'Green' }
+        Write-Host "🚫 Blocked: $notPresent/$($Status.BlockedTools.Count) not installed" -ForegroundColor $blockedColor -NoNewline
+        if ($toUninstall -gt 0) {
+            $blockedNames = ($Status.BlockedTools | Where-Object { $_.Action -eq "Uninstall" } | ForEach-Object { $_.Name }) -join ", "
+            Write-Host " (to uninstall: $blockedNames)" -ForegroundColor Cyan
+        } else {
+            Write-Host ""
+        }
+    }
+    
     # GitHub CLI status - one line
     $ghStatus = if ($Status.GitHubCLI.Installed -and $Status.GitHubCLI.Authenticated) { "✓ Authenticated" } 
                 elseif ($Status.GitHubCLI.Installed) { "⚠ Not authenticated" } 
@@ -741,7 +865,21 @@ function Show-PreFlightStatus {
     if ($Status.NerdFont) {
         $fontStatus = if ($Status.NerdFont.Installed) { "✓ $($Status.NerdFont.Name)" } else { "✗ $($Status.NerdFont.Name) needs install" }
         $fontColor = if ($Status.NerdFont.Installed) { 'Green' } else { 'Yellow' }
-        Write-Host "🔤 Nerd Font: $fontStatus" -ForegroundColor $fontColor
+        Write-Host "🔤 Nerd Font: $fontStatus" -ForegroundColor $fontColor -NoNewline
+        
+        # Show terminal font config status
+        $configIssues = @()
+        if ($null -ne $Status.NerdFont.VSCodeConfigured -and -not $Status.NerdFont.VSCodeConfigured) {
+            $configIssues += "VS Code"
+        }
+        if ($null -ne $Status.NerdFont.WindowsTerminalConfigured -and -not $Status.NerdFont.WindowsTerminalConfigured) {
+            $configIssues += "Windows Terminal"
+        }
+        if ($configIssues.Count -gt 0) {
+            Write-Host " (to configure: $($configIssues -join ', '))" -ForegroundColor Cyan
+        } else {
+            Write-Host ""
+        }
     }
     
     # Repository status - one line
@@ -749,6 +887,20 @@ function Show-PreFlightStatus {
         $repoStatus = if ($Status.Repository.Exists) { "✓ $($Status.Repository.Path)" } else { "✗ Needs clone" }
         $repoColor = if ($Status.Repository.Exists) { 'Green' } else { 'Yellow' }
         Write-Host "📁 Repository: $repoStatus" -ForegroundColor $repoColor
+    }
+    
+    # VS Code Extensions status - one line
+    if ($Status.VSCodeExtensions -and $Status.VSCodeExtensions.Count -gt 0) {
+        $extToInstall = ($Status.VSCodeExtensions | Where-Object { $_.Action -eq "Install" }).Count
+        $extInstalled = ($Status.VSCodeExtensions | Where-Object { $_.Installed }).Count
+        $extColor = if ($extToInstall -gt 0) { 'Yellow' } else { 'Green' }
+        Write-Host "💻 VS Code Extensions: $extInstalled/$($Status.VSCodeExtensions.Count) installed" -ForegroundColor $extColor -NoNewline
+        if ($extToInstall -gt 0) {
+            $extNames = ($Status.VSCodeExtensions | Where-Object { $_.Action -eq "Install" } | ForEach-Object { $_.Name }) -join ", "
+            Write-Host " (to install: $extNames)" -ForegroundColor Cyan
+        } else {
+            Write-Host ""
+        }
     }
     
     # Firefox Extensions status - one line
@@ -933,6 +1085,38 @@ function Install-Tools {
         Write-Host "`n   Summary: $installed installed, $failed failed, $($toolsAlreadyInstalled.Count) already installed" -ForegroundColor Gray
     }
 
+    # --- Uninstall Blocked Tools ---
+    $toolsToUninstall = $PreFlightStatus.BlockedTools | Where-Object { $_.Action -eq "Uninstall" }
+    if ($toolsToUninstall -and $toolsToUninstall.Count -gt 0) {
+        Write-Host "`n=== Uninstalling $($toolsToUninstall.Count) Blocked Tools ===" -ForegroundColor Cyan
+        
+        $uninstalled = 0
+        $uninstallFailed = 0
+        
+        foreach ($tool in $toolsToUninstall) {
+            if ($IsDryRun) {
+                Write-Host " • [DRY RUN] Would uninstall $($tool.Name)" -ForegroundColor Cyan
+            } else {
+                Write-Host " • Uninstalling $($tool.Name)..." -ForegroundColor Yellow -NoNewline
+                
+                $wingetArgs = @("uninstall", "--id", $tool.Id, "--silent")
+                & winget @wingetArgs 2>&1 | Out-Null
+                
+                if ($LASTEXITCODE -eq 0) {
+                    Write-Host " ✓" -ForegroundColor Green
+                    $uninstalled++
+                } else {
+                    Write-Host " ✗ (Exit: $LASTEXITCODE)" -ForegroundColor Red
+                    $uninstallFailed++
+                }
+            }
+        }
+        
+        if (-not $IsDryRun) {
+            Write-Host "`n   Summary: $uninstalled uninstalled, $uninstallFailed failed" -ForegroundColor Gray
+        }
+    }
+
     # --- GitHub CLI Setup & Authentication ---
     if ($PreFlightStatus.GitHubCLI.Action -ne "Skip auth") {
         Write-Host "`n=== GitHub CLI Configuration ===" -ForegroundColor Cyan
@@ -1041,12 +1225,18 @@ function Install-Tools {
         }
     }
 
-    # --- Nerd Font Installation ---
-    if ($PreFlightStatus.NerdFont -and $PreFlightStatus.NerdFont.Action -ne "Skip") {
-        Write-Host "`n=== Nerd Font Installation ===" -ForegroundColor Cyan
+    # --- Nerd Font Installation & Terminal Configuration ---
+    $needsFontInstall = $PreFlightStatus.NerdFont -and $PreFlightStatus.NerdFont.Action -ne "Skip"
+    $needsVSCodeConfig = $PreFlightStatus.NerdFont -and ($PreFlightStatus.NerdFont.VSCodeConfigured -eq $false)
+    $needsWTConfig = $PreFlightStatus.NerdFont -and ($PreFlightStatus.NerdFont.WindowsTerminalConfigured -eq $false)
+    
+    if ($needsFontInstall -or $needsVSCodeConfig -or $needsWTConfig) {
+        Write-Host "`n=== Nerd Font Configuration ===" -ForegroundColor Cyan
         $fontName = $Configuration.fonts.nerdFont
         $terminalFontName = if ($Configuration.fonts.terminalFontName) { $Configuration.fonts.terminalFontName } else { "$fontName NF" }
-        if ($fontName) {
+        
+        # Install font if needed
+        if ($needsFontInstall -and $fontName) {
             if ($IsDryRun) {
                 Write-Host " • [DRY RUN] Would install $fontName Nerd Font" -ForegroundColor Cyan
             } else {
@@ -1060,56 +1250,128 @@ function Install-Tools {
                     Write-Host "   Error: $_" -ForegroundColor Red
                 }
             }
-            
-            # Configure VS Code terminal font
-            if ($Configuration.fonts.configureVSCode -ne $false) {
-                $vscodeSettingsPath = "$env:APPDATA\Code\User\settings.json"
-                if (Test-Path $vscodeSettingsPath) {
-                    $vscodeSettings = Get-Content $vscodeSettingsPath -Raw | ConvertFrom-Json
-                    $currentFont = $vscodeSettings.'terminal.integrated.fontFamily'
+        }
+        
+        # Configure VS Code terminal font
+        if ($needsVSCodeConfig -and $Configuration.fonts.configureVSCode -ne $false) {
+            $vscodeSettingsPath = "$env:APPDATA\Code\User\settings.json"
+            if (Test-Path $vscodeSettingsPath) {
+                try {
+                    $vscodeSettings = Get-Content $vscodeSettingsPath -Raw | ConvertFrom-Json -AsHashtable
+                } catch {
+                    $vscodeSettings = @{}
+                }
+                
+                if ($IsDryRun) {
+                    Write-Host " • [DRY RUN] Would set VS Code terminal font to '$terminalFontName'" -ForegroundColor Cyan
+                } else {
+                    Write-Host " • Setting VS Code terminal font..." -ForegroundColor Green -NoNewline
+                    $vscodeSettings['terminal.integrated.fontFamily'] = $terminalFontName
+                    $vscodeSettings | ConvertTo-Json -Depth 10 | Set-Content $vscodeSettingsPath -Encoding UTF8
+                    Write-Host " ✓" -ForegroundColor Green
+                }
+            }
+        }
+        
+        # Configure Windows Terminal font
+        if ($needsWTConfig -and $Configuration.fonts.configureWindowsTerminal -ne $false) {
+            $wtSettingsPath = "$env:LOCALAPPDATA\Packages\Microsoft.WindowsTerminal_8wekyb3d8bbwe\LocalState\settings.json"
+            if (Test-Path $wtSettingsPath) {
+                try {
+                    $wtSettings = Get-Content $wtSettingsPath -Raw | ConvertFrom-Json
                     
-                    if ($currentFont -ne $terminalFontName) {
-                        if ($IsDryRun) {
-                            Write-Host " • [DRY RUN] Would set VS Code terminal font to '$terminalFontName'" -ForegroundColor Cyan
-                        } else {
-                            Write-Host " • Setting VS Code terminal font..." -ForegroundColor Green -NoNewline
-                            $vscodeSettings | Add-Member -NotePropertyName 'terminal.integrated.fontFamily' -NotePropertyValue $terminalFontName -Force
-                            $vscodeSettings | ConvertTo-Json -Depth 10 | Set-Content $vscodeSettingsPath -Encoding UTF8
+                    if ($IsDryRun) {
+                        Write-Host " • [DRY RUN] Would set Windows Terminal font to '$terminalFontName'" -ForegroundColor Cyan
+                    } else {
+                        Write-Host " • Setting Windows Terminal font..." -ForegroundColor Green -NoNewline
+                        if (-not $wtSettings.profiles.defaults) {
+                            $wtSettings.profiles | Add-Member -NotePropertyName 'defaults' -NotePropertyValue @{} -Force
+                        }
+                        if (-not $wtSettings.profiles.defaults.font) {
+                            $wtSettings.profiles.defaults | Add-Member -NotePropertyName 'font' -NotePropertyValue @{} -Force
+                        }
+                        $wtSettings.profiles.defaults.font | Add-Member -NotePropertyName 'face' -NotePropertyValue $terminalFontName -Force
+                        $wtSettings | ConvertTo-Json -Depth 10 | Set-Content $wtSettingsPath -Encoding UTF8
+                        Write-Host " ✓" -ForegroundColor Green
+                    }
+                } catch {
+                    Write-Host " • Could not configure Windows Terminal: $_" -ForegroundColor Yellow
+                }
+            }
+        }
+    }
+
+    # --- VS Code Extensions ---
+    if ($Configuration.vscodeExtensions -and $Configuration.vscodeExtensions.Count -gt 0) {
+        $extToInstall = $PreFlightStatus.VSCodeExtensions | Where-Object { $_.Action -eq "Install" }
+        
+        if ($extToInstall -and $extToInstall.Count -gt 0) {
+            Write-Host "`n=== VS Code Extensions ===" -ForegroundColor Cyan
+            
+            $codeAvailable = Get-Command code -ErrorAction SilentlyContinue
+            if ($codeAvailable) {
+                foreach ($ext in $extToInstall) {
+                    if ($IsDryRun) {
+                        Write-Host " • [DRY RUN] Would install $($ext.Name)" -ForegroundColor Cyan
+                    } else {
+                        Write-Host " • Installing $($ext.Name)..." -ForegroundColor Green -NoNewline
+                        $result = code --install-extension $ext.Id --force 2>&1
+                        if ($LASTEXITCODE -eq 0) {
                             Write-Host " ✓" -ForegroundColor Green
+                        } else {
+                            Write-Host " ✗" -ForegroundColor Red
                         }
                     }
                 }
+            } else {
+                Write-Host " • VS Code not found in PATH" -ForegroundColor Yellow
             }
+        }
+    }
+
+    # --- VS Code Settings ---
+    if ($Configuration.vscodeSettings) {
+        $vscodeSettingsPath = "$env:APPDATA\Code\User\settings.json"
+        $settingsChanged = $false
+        
+        if (Test-Path $vscodeSettingsPath) {
+            try {
+                $currentSettings = Get-Content $vscodeSettingsPath -Raw | ConvertFrom-Json -AsHashtable
+            } catch {
+                $currentSettings = @{}
+            }
+        } else {
+            $currentSettings = @{}
+            # Ensure directory exists
+            $vscodeUserDir = Split-Path $vscodeSettingsPath -Parent
+            if (-not (Test-Path $vscodeUserDir)) {
+                New-Item -Path $vscodeUserDir -ItemType Directory -Force | Out-Null
+            }
+        }
+        
+        # Check each setting
+        $Configuration.vscodeSettings.PSObject.Properties | ForEach-Object {
+            $key = $_.Name
+            $desiredValue = $_.Value
+            $currentValue = $currentSettings[$key]
             
-            # Configure Windows Terminal font
-            if ($Configuration.fonts.configureWindowsTerminal -ne $false) {
-                $wtSettingsPath = "$env:LOCALAPPDATA\Packages\Microsoft.WindowsTerminal_8wekyb3d8bbwe\LocalState\settings.json"
-                if (Test-Path $wtSettingsPath) {
-                    try {
-                        $wtSettings = Get-Content $wtSettingsPath -Raw | ConvertFrom-Json
-                        $currentWtFont = $wtSettings.profiles.defaults.font.face
-                        
-                        if ($currentWtFont -ne $terminalFontName) {
-                            if ($IsDryRun) {
-                                Write-Host " • [DRY RUN] Would set Windows Terminal font to '$terminalFontName'" -ForegroundColor Cyan
-                            } else {
-                                Write-Host " • Setting Windows Terminal font..." -ForegroundColor Green -NoNewline
-                                if (-not $wtSettings.profiles.defaults) {
-                                    $wtSettings.profiles | Add-Member -NotePropertyName 'defaults' -NotePropertyValue @{} -Force
-                                }
-                                if (-not $wtSettings.profiles.defaults.font) {
-                                    $wtSettings.profiles.defaults | Add-Member -NotePropertyName 'font' -NotePropertyValue @{} -Force
-                                }
-                                $wtSettings.profiles.defaults.font | Add-Member -NotePropertyName 'face' -NotePropertyValue $terminalFontName -Force
-                                $wtSettings | ConvertTo-Json -Depth 10 | Set-Content $wtSettingsPath -Encoding UTF8
-                                Write-Host " ✓" -ForegroundColor Green
-                            }
-                        } else {
-                            Write-Host " • Windows Terminal font already set to '$terminalFontName'" -ForegroundColor Gray
-                        }
-                    } catch {
-                        Write-Host " • Could not configure Windows Terminal: $_" -ForegroundColor Yellow
-                    }
+            if ($currentValue -ne $desiredValue) {
+                $settingsChanged = $true
+                $currentSettings[$key] = $desiredValue
+            }
+        }
+        
+        if ($settingsChanged) {
+            Write-Host "`n=== VS Code Settings ===" -ForegroundColor Cyan
+            if ($IsDryRun) {
+                Write-Host " • [DRY RUN] Would update VS Code settings" -ForegroundColor Cyan
+            } else {
+                Write-Host " • Updating VS Code settings..." -ForegroundColor Green -NoNewline
+                try {
+                    $currentSettings | ConvertTo-Json -Depth 10 | Set-Content $vscodeSettingsPath -Force
+                    Write-Host " ✓" -ForegroundColor Green
+                } catch {
+                    Write-Host " ✗ $_" -ForegroundColor Red
                 }
             }
         }

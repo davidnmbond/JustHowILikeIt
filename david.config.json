@@ -19,6 +19,10 @@
     "configureVSCode": true,
     "configureWindowsTerminal": true
   },
+  "vscodeSettings": {
+    "git.autofetch": true,
+    "git.autofetchPeriod": 180
+  },
   "windowsSettings": {
     "showFileExtensions": true,
     "showHiddenFiles": false,
@@ -128,8 +132,8 @@
       "category": "UTILITIES"
     },
     {
-      "id": "OpenVPNTechnologies.OpenVPN",
-      "name": "OpenVPN",
+      "id": "OpenVPNTechnologies.OpenVPNConnect",
+      "name": "OpenVPN Connect",
       "category": "UTILITIES"
     },
     {
@@ -191,6 +195,32 @@
       "id": "Valve.Steam",
       "name": "Steam",
       "category": "GAMING"
+    },
+    {
+      "id": "RustDesk.RustDesk",
+      "name": "RustDesk",
+      "category": "UTILITIES"
+    },
+    {
+      "id": "schollz.croc",
+      "name": "croc",
+      "category": "UTILITIES"
+    },
+    {
+      "id": "Mirantis.Lens",
+      "name": "Lens",
+      "category": "UTILITIES"
+    },
+    {
+      "id": "Insecure.Nmap",
+      "name": "Nmap",
+      "category": "UTILITIES"
+    }
+  ],
+  "blockedTools": [
+    {
+      "id": "OpenVPNTechnologies.OpenVPN",
+      "name": "OpenVPN (use Connect instead)"
     }
   ],
   "dotnetTools": [
@@ -201,6 +231,12 @@
     {
       "id": "nbgv",
       "name": "Nerdbank.GitVersioning CLI"
+    }
+  ],
+  "vscodeExtensions": [
+    {
+      "id": "johnpapa.vscode-peacock",
+      "name": "Peacock"
     }
   ],
   "firefoxExtensions": [

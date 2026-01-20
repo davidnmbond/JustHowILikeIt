@@ -19,6 +19,10 @@
     "configureVSCode": true,
     "configureWindowsTerminal": true
   },
+  "vscodeSettings": {
+    "git.autofetch": true,
+    "git.autofetchPeriod": 180
+  },
   "windowsSettings": {
     "showFileExtensions": true,
     "showHiddenFiles": false,
@@ -150,6 +154,17 @@
       "id": "ShareX.ShareX",
       "name": "ShareX",
       "category": "UTILITIES"
+    },
+    {
+      "id": "RustDesk.RustDesk",
+      "name": "RustDesk",
+      "category": "UTILITIES"
+    }
+  ],
+  "blockedTools": [
+    {
+      "id": "SomeVendor.UnwantedApp",
+      "name": "Unwanted Application"
     }
   ],
   "dotnetTools": [
@@ -160,6 +175,16 @@
     {
       "id": "nbgv",
       "name": "Nerdbank.GitVersioning CLI"
+    }
+  ],
+  "vscodeExtensions": [
+    {
+      "id": "johnpapa.vscode-peacock",
+      "name": "Peacock"
+    },
+    {
+      "id": "esbenp.prettier-vscode",
+      "name": "Prettier"
     }
   ],
   "firefoxExtensions": [
