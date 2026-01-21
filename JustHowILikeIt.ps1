@@ -355,8 +355,9 @@ function Get-PreFlightStatus {
         $profileConfigured = $false
         if ($poshInstalled -and (Test-Path $PROFILE)) {
             $profileContent = Get-Content $PROFILE -Raw -ErrorAction SilentlyContinue
-            # Check for the portable installation pattern in profile
-            $profileConfigured = $profileContent -match 'oh-my-posh.*init pwsh.*--config.*Programs.*oh-my-posh'
+            # Check for the portable installation pattern in profile (supports both direct call and variable-based call)
+            $profileConfigured = $profileContent -match 'oh-my-posh.*init pwsh.*--config.*Programs.*oh-my-posh' -or
+                                 $profileContent -match '\$ohMyPoshExe.*init pwsh.*--config.*\$themePath'
         }
         
         $status.OhMyPosh = [PSCustomObject]@{
@@ -460,7 +461,6 @@ function Get-PreFlightStatus {
                 $status.NerdFont | Add-Member -NotePropertyName 'WindowsTerminalConfigured' -NotePropertyValue $wtFontConfigured -Force
             }
         }
-    }
     
     # Check Repository
     $currentCheck++
