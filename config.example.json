@@ -31,18 +31,14 @@
     "taskbar": {
       "alignment": "left",
       "showWidgets": false,
-      "showSearch": false
+      "showSearch": false,
+      "showRecentFiles": true
     }
   },
   "tools": [
     {
       "id": "Microsoft.PowerShell",
       "name": "PowerShell Core",
-      "category": "CORE TERMINAL & SHELL"
-    },
-    {
-      "id": "JanDeDobbeleer.OhMyPosh",
-      "name": "Oh My Posh",
       "category": "CORE TERMINAL & SHELL"
     },
     {
@@ -164,6 +160,11 @@
       "id": "Toggl.TogglTrack",
       "name": "Toggl Track",
       "category": "UTILITIES"
+    },
+    {
+      "id": "9NKSQGP7F2NH",
+      "name": "WhatsApp",
+      "category": "COMMUNICATION"
     }
   ],
   "blockedTools": [

@@ -356,32 +356,39 @@ function Get-PreFlightStatus {
         }
     }
     
-    # Check Oh My Posh
+    # Check Oh My Posh (portable installation)
     $currentCheck++
     Write-Progress -Activity "Pre-flight checks" -Status "Checking Oh My Posh..." -PercentComplete ([int](($currentCheck / $totalChecks) * 100))
     
     if ($Configuration.ohMyPosh.enabled) {
-        $poshInstalled = Get-Command oh-my-posh -ErrorAction SilentlyContinue
+        $poshExePath = "$env:LOCALAPPDATA\Programs\oh-my-posh\bin\oh-my-posh.exe"
+        $poshThemesPath = "$env:LOCALAPPDATA\Programs\oh-my-posh\themes"
+        $poshInstalled = Test-Path $poshExePath
+        $themeName = $Configuration.ohMyPosh.theme
+        $themePath = "$poshThemesPath\$themeName.omp.json"
+        $themeExists = Test-Path $themePath
+        
+        # Check if profile is configured correctly
+        $profileConfigured = $false
         if ($poshInstalled -and (Test-Path $PROFILE)) {
-            $profileContent = Get-Content $PROFILE -Raw
-            $themeName = $Configuration.ohMyPosh.theme
-            $poshInitLine = "oh-my-posh init pwsh --config `"`$env:POSH_THEMES_PATH\$themeName.omp.json`" | Invoke-Expression"
-            $isConfigured = $profileContent -match [regex]::Escape($poshInitLine)
-            
-            $status.OhMyPosh = [PSCustomObject]@{
-                Installed = $true
-                Configured = $isConfigured
-                Theme = $themeName
-                Action = if ($isConfigured) { "Skip" } else { "Configure theme" }
-            }
-        } else {
-            $status.OhMyPosh = [PSCustomObject]@{
-                Installed = ($null -ne $poshInstalled)
-                Configured = $false
-                Theme = $Configuration.ohMyPosh.theme
-                Action = if ($poshInstalled) { "Configure theme" } else { "Will be installed & configured" }
-            }
+            $profileContent = Get-Content $PROFILE -Raw -ErrorAction SilentlyContinue
+            # Check for the portable installation pattern in profile
+            $profileConfigured = $profileContent -match 'oh-my-posh.*init pwsh.*--config.*Programs.*oh-my-posh'
         }
+        
+        $status.OhMyPosh = [PSCustomObject]@{
+            Installed = $poshInstalled
+            ThemeExists = $themeExists
+            Configured = $profileConfigured
+            Theme = $themeName
+            ExePath = $poshExePath
+            ThemesPath = $poshThemesPath
+            Action = if ($poshInstalled -and $themeExists -and $profileConfigured) { "Skip" } 
+                     elseif ($poshInstalled -and $themeExists) { "Configure profile" }
+                     elseif ($poshInstalled) { "Download themes & configure" }
+                     else { "Install & configure" }
+        }
+    }
         
         # Check Nerd Font (now from fonts config section)
         $fontName = if ($Configuration.fonts.nerdFont) { $Configuration.fonts.nerdFont } else { $Configuration.ohMyPosh.font }
@@ -796,6 +803,23 @@ function Get-PreFlightStatus {
                 }
             }
             
+            # Recent files in Jump Lists (Start_TrackDocs: 1=enabled, 0=disabled)
+            # Also requires ShowRecent and ShowFrequent in Explorer key
+            if ($null -ne $Configuration.windowsSettings.taskbar.showRecentFiles) {
+                $desiredRecent = if ($Configuration.windowsSettings.taskbar.showRecentFiles) { 1 } else { 0 }
+                $currentRecent = $advancedReg.Start_TrackDocs
+                $explorerReg = Get-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer" -ErrorAction SilentlyContinue
+                $currentShowRecent = $explorerReg.ShowRecent
+                $currentShowFrequent = $explorerReg.ShowFrequent
+                # All three must match for it to be fully configured
+                $isConfigured = ($currentRecent -eq $desiredRecent) -and ($currentShowRecent -eq $desiredRecent) -and ($currentShowFrequent -eq $desiredRecent)
+                $taskbarStatus.ShowRecentFiles = [PSCustomObject]@{
+                    Desired = $Configuration.windowsSettings.taskbar.showRecentFiles
+                    Current = ($currentRecent -eq 1) -and ($currentShowRecent -eq 1) -and ($currentShowFrequent -eq 1)
+                    Configured = $isConfigured
+                }
+            }
+            
             $wsStatus.Taskbar = $taskbarStatus
         }
         
@@ -1179,13 +1203,57 @@ function Install-Tools {
         }
     }
 
-    # --- Oh My Posh Desired State Configuration ---
+    # --- Oh My Posh Desired State Configuration (Portable Installation) ---
     if ($PreFlightStatus.OhMyPosh -and $PreFlightStatus.OhMyPosh.Action -ne "Skip") {
         Write-Host "`n=== Oh My Posh Configuration ===" -ForegroundColor Cyan
-        if (Get-Command oh-my-posh -ErrorAction SilentlyContinue) {
-            $themeName = $Configuration.ohMyPosh.theme
-            $poshInitLine = "oh-my-posh init pwsh --config `"`$env:POSH_THEMES_PATH\$themeName.omp.json`" | Invoke-Expression"
-            
+        
+        $poshExePath = $PreFlightStatus.OhMyPosh.ExePath
+        $poshThemesPath = $PreFlightStatus.OhMyPosh.ThemesPath
+        $themeName = $Configuration.ohMyPosh.theme
+        $themePath = "$poshThemesPath\$themeName.omp.json"
+        
+        # Install oh-my-posh binary if not present
+        if (-not (Test-Path $poshExePath)) {
+            if ($IsDryRun) {
+                Write-Host " • [DRY RUN] Would download oh-my-posh binary" -ForegroundColor Cyan
+            } else {
+                Write-Host " • Downloading oh-my-posh..." -ForegroundColor Green -NoNewline
+                try {
+                    $binDir = Split-Path $poshExePath -Parent
+                    New-Item -Path $binDir -ItemType Directory -Force | Out-Null
+                    $url = "https://github.com/JanDeDobbeleer/oh-my-posh/releases/latest/download/posh-windows-amd64.exe"
+                    Invoke-WebRequest -Uri $url -OutFile $poshExePath -UseBasicParsing
+                    Write-Host " ✓" -ForegroundColor Green
+                } catch {
+                    Write-Host " ✗" -ForegroundColor Red
+                    Write-Host "   Error: $_" -ForegroundColor Red
+                }
+            }
+        }
+        
+        # Download themes if not present
+        if (-not (Test-Path $themePath)) {
+            if ($IsDryRun) {
+                Write-Host " • [DRY RUN] Would download oh-my-posh themes" -ForegroundColor Cyan
+            } else {
+                Write-Host " • Downloading themes..." -ForegroundColor Green -NoNewline
+                try {
+                    New-Item -Path $poshThemesPath -ItemType Directory -Force | Out-Null
+                    $themesUrl = "https://github.com/JanDeDobbeleer/oh-my-posh/releases/latest/download/themes.zip"
+                    $zipPath = "$env:TEMP\omp-themes.zip"
+                    Invoke-WebRequest -Uri $themesUrl -OutFile $zipPath -UseBasicParsing
+                    Expand-Archive -Path $zipPath -DestinationPath $poshThemesPath -Force
+                    Remove-Item $zipPath -ErrorAction SilentlyContinue
+                    Write-Host " ✓" -ForegroundColor Green
+                } catch {
+                    Write-Host " ✗" -ForegroundColor Red
+                    Write-Host "   Error: $_" -ForegroundColor Red
+                }
+            }
+        }
+        
+        # Configure PowerShell profile
+        if ((Test-Path $poshExePath) -and (Test-Path $themePath)) {
             if (-not (Test-Path $PROFILE)) {
                 if ($IsDryRun) {
                     Write-Host " • [DRY RUN] Would create PowerShell profile" -ForegroundColor Cyan
@@ -1193,32 +1261,43 @@ function Install-Tools {
                     New-Item -Path $PROFILE -Type File -Force | Out-Null
                 }
             }
-
-            $profileContent = if (Test-Path $PROFILE) { Get-Content $PROFILE -Raw } else { "" }
             
-            # Check if any oh-my-posh init line exists
-            $hasOhMyPosh = $profileContent -match 'oh-my-posh init pwsh'
-            $hasCorrectLine = $profileContent -match [regex]::Escape($poshInitLine)
+            $profileContent = if (Test-Path $PROFILE) { Get-Content $PROFILE -Raw -ErrorAction SilentlyContinue } else { "" }
+            if (-not $profileContent) { $profileContent = "" }
             
-            if (-not $hasCorrectLine) {
+            # Check if profile already has correct oh-my-posh config
+            $hasCorrectConfig = $profileContent -match 'oh-my-posh.*init pwsh.*--config.*Programs.*oh-my-posh'
+            
+            if (-not $hasCorrectConfig) {
                 if ($IsDryRun) {
                     Write-Host " • [DRY RUN] Would configure $themeName theme in profile" -ForegroundColor Cyan
                 } else {
-                    Write-Host " • Adding $themeName theme to profile..." -ForegroundColor Green -NoNewline
-                    if ($hasOhMyPosh) {
-                        # Replace existing oh-my-posh lines and associated comments with the correct one
-                        $newContent = $profileContent -replace '(?m)^#\s*Oh My Posh.*$\r?\n?', ''
-                        $newContent = $newContent -replace '(?m)^.*oh-my-posh init pwsh.*$\r?\n?', ''
-                        $newContent = $newContent.Trim()
-                        if ($newContent) {
-                            $newContent = "$newContent`n`n# Oh My Posh Configuration`n$poshInitLine"
-                        } else {
-                            $newContent = "# Oh My Posh Configuration`n$poshInitLine"
-                        }
-                        Set-Content -Path $PROFILE -Value $newContent -Force
+                    Write-Host " • Configuring $themeName theme in profile..." -ForegroundColor Green -NoNewline
+                    
+                    # Remove any existing oh-my-posh lines
+                    $newContent = $profileContent -replace '(?m)^#\s*Oh My Posh.*$\r?\n?', ''
+                    $newContent = $newContent -replace '(?m)^.*oh-my-posh.*init.*pwsh.*$\r?\n?', ''
+                    $newContent = $newContent -replace '(?m)^\$ohMyPoshExe.*$\r?\n?', ''
+                    $newContent = $newContent -replace '(?m)^\$themePath.*$\r?\n?', ''
+                    $newContent = $newContent -replace '(?m)^if.*Test-Path.*ohMyPoshExe.*\r?\n?', ''
+                    $newContent = $newContent.Trim()
+                    
+                    # Add new oh-my-posh configuration
+                    $poshConfig = @"
+
+# Oh My Posh Configuration
+`$ohMyPoshExe = "`$env:LOCALAPPDATA\Programs\oh-my-posh\bin\oh-my-posh.exe"
+`$themePath = "`$env:LOCALAPPDATA\Programs\oh-my-posh\themes\$themeName.omp.json"
+if ((Test-Path `$ohMyPoshExe) -and (Test-Path `$themePath)) {
+    & `$ohMyPoshExe init pwsh --config `$themePath | Invoke-Expression
+}
+"@
+                    if ($newContent) {
+                        $newContent = "$newContent`n$poshConfig"
                     } else {
-                        Add-Content -Path $PROFILE -Value "`n# Oh My Posh Configuration`n$poshInitLine"
+                        $newContent = $poshConfig.TrimStart()
                     }
+                    Set-Content -Path $PROFILE -Value $newContent -Force
                     Write-Host " ✓" -ForegroundColor Green
                 }
             }
@@ -1235,20 +1314,23 @@ function Install-Tools {
         $fontName = $Configuration.fonts.nerdFont
         $terminalFontName = if ($Configuration.fonts.terminalFontName) { $Configuration.fonts.terminalFontName } else { "$fontName NF" }
         
-        # Install font if needed
+        # Install font if needed (use portable oh-my-posh)
         if ($needsFontInstall -and $fontName) {
+            $poshExePath = "$env:LOCALAPPDATA\Programs\oh-my-posh\bin\oh-my-posh.exe"
             if ($IsDryRun) {
                 Write-Host " • [DRY RUN] Would install $fontName Nerd Font" -ForegroundColor Cyan
-            } else {
+            } elseif (Test-Path $poshExePath) {
                 Write-Host " • Installing $fontName Nerd Font..." -ForegroundColor Green -NoNewline
                 try {
-                    $result = & oh-my-posh font install $fontName 2>&1
+                    $result = & $poshExePath font install $fontName 2>&1
                     Write-Host " ✓" -ForegroundColor Green
                 }
                 catch {
                     Write-Host " ✗" -ForegroundColor Red
                     Write-Host "   Error: $_" -ForegroundColor Red
                 }
+            } else {
+                Write-Host " • Skipping font install (oh-my-posh not installed)" -ForegroundColor Yellow
             }
         }
         
@@ -1791,6 +1873,22 @@ public class Wallpaper {
                     } else {
                         Write-Host " • $(if ($desired) { 'Showing' } else { 'Hiding' }) search..." -ForegroundColor Green -NoNewline
                         Set-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Search" -Name "SearchboxTaskbarMode" -Value $searchValue
+                        Write-Host " ✓" -ForegroundColor Green
+                        $taskbarChanged = $true
+                    }
+                }
+                
+                # Recent Files in Jump Lists
+                if ($PreFlightStatus.WindowsSettings.Taskbar.ShowRecentFiles -and -not $PreFlightStatus.WindowsSettings.Taskbar.ShowRecentFiles.Configured) {
+                    $desired = $Configuration.windowsSettings.taskbar.showRecentFiles
+                    $recentValue = if ($desired) { 1 } else { 0 }
+                    if ($IsDryRun) {
+                        Write-Host " • [DRY RUN] Would $(if ($desired) { 'enable' } else { 'disable' }) recent files in Jump Lists" -ForegroundColor Cyan
+                    } else {
+                        Write-Host " • $(if ($desired) { 'Enabling' } else { 'Disabling' }) recent files in Jump Lists..." -ForegroundColor Green -NoNewline
+                        Set-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" -Name "Start_TrackDocs" -Value $recentValue
+                        Set-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer" -Name "ShowRecent" -Value $recentValue
+                        Set-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer" -Name "ShowFrequent" -Value $recentValue
                         Write-Host " ✓" -ForegroundColor Green
                         $taskbarChanged = $true
                     }
