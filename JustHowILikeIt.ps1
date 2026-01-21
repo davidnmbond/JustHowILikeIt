@@ -132,7 +132,6 @@ function Get-CachedStatus {
             Repository = $cache.Repository
             VSCodeExtensions = @()
             FirefoxExtensions = @()
-            DockerImages = @()
             DotnetTools = @()
             Backups = @()
             WindowsSettings = $cache.WindowsSettings
@@ -183,19 +182,6 @@ function Get-CachedStatus {
             }
         }
         
-        if ($cache.DockerImages) {
-            foreach ($img in $cache.DockerImages) {
-                $status.DockerImages += [PSCustomObject]@{
-                    Name = $img.Name
-                    Image = $img.Image
-                    Tag = $img.Tag
-                    FullImage = $img.FullImage
-                    Installed = $img.Installed
-                    Action = $img.Action
-                }
-            }
-        }
-        
         return $status
     }
     catch {
@@ -217,7 +203,6 @@ function Save-StatusToCache {
         Repository = $Status.Repository
         VSCodeExtensions = $Status.VSCodeExtensions
         FirefoxExtensions = $Status.FirefoxExtensions
-        DockerImages = $Status.DockerImages
         DotnetTools = $Status.DotnetTools
         WindowsSettings = $Status.WindowsSettings
     }
@@ -272,7 +257,6 @@ function Get-PreFlightStatus {
         Repository = $null
         VSCodeExtensions = @()
         FirefoxExtensions = @()
-        DockerImages = @()
         DotnetTools = @()
         Backups = @()
         WindowsSettings = $null
@@ -285,11 +269,10 @@ function Get-PreFlightStatus {
     $firefoxExtCount = if ($Configuration.firefoxExtensions) { 1 } else { 0 }
     $vscodeExtCount = if ($Configuration.vscodeExtensions) { 1 } else { 0 }
     $fontCheck = if ($Configuration.fonts.nerdFont -or $Configuration.ohMyPosh.font) { 1 } else { 0 }
-    $dockerCheck = if ($Configuration.dockerImages) { 1 } else { 0 }
     $backupCheck = if ($Configuration.backups) { 1 } else { 0 }
     $windowsSettingsCheck = if ($Configuration.windowsSettings) { 1 } else { 0 }
     $blockedToolsCount = if ($Configuration.blockedTools) { $Configuration.blockedTools.Count } else { 0 }
-    $totalChecks = $Configuration.tools.Count + $blockedToolsCount + 3 + $vscodeExtCount + $firefoxExtCount + $fontCheck + $dockerCheck + $backupCheck + $windowsSettingsCheck
+    $totalChecks = $Configuration.tools.Count + $blockedToolsCount + 3 + $vscodeExtCount + $firefoxExtCount + $fontCheck + $backupCheck + $windowsSettingsCheck
     $currentCheck = 0
     
     # Check each tool with progress bar
@@ -555,44 +538,6 @@ function Get-PreFlightStatus {
                 Id = $ext.id
                 Url = $ext.url
                 Installed = $isInstalled
-            }
-        }
-    }
-    
-    # Check Docker Images
-    if ($Configuration.dockerImages -and $Configuration.dockerImages.Count -gt 0) {
-        $currentCheck++
-        Write-Progress -Activity "Pre-flight checks" -Status "Checking Docker images..." -PercentComplete ([int](($currentCheck / $totalChecks) * 100))
-        
-        $dockerAvailable = Get-Command docker -ErrorAction SilentlyContinue
-        if ($dockerAvailable) {
-            $existingImages = docker images --format "{{.Repository}}:{{.Tag}}" 2>$null
-            
-            foreach ($img in $Configuration.dockerImages) {
-                $tag = if ($img.tag) { $img.tag } else { "latest" }
-                $fullImage = "$($img.image):$tag"
-                $isPresent = $existingImages -contains $fullImage
-                
-                $status.DockerImages += [PSCustomObject]@{
-                    Name = $img.name
-                    Image = $img.image
-                    Tag = $tag
-                    FullImage = $fullImage
-                    Installed = $isPresent
-                    Action = if ($isPresent) { "Skip" } else { "Pull" }
-                }
-            }
-        } else {
-            foreach ($img in $Configuration.dockerImages) {
-                $tag = if ($img.tag) { $img.tag } else { "latest" }
-                $status.DockerImages += [PSCustomObject]@{
-                    Name = $img.name
-                    Image = $img.image
-                    Tag = $tag
-                    FullImage = "$($img.image):$tag"
-                    Installed = $false
-                    Action = "Docker not available"
-                }
             }
         }
     }
@@ -936,20 +881,6 @@ function Show-PreFlightStatus {
         if ($extToInstall -gt 0) {
             $extNames = ($Status.FirefoxExtensions | Where-Object { -not $_.Installed } | ForEach-Object { $_.Name }) -join ", "
             Write-Host " (to install: $extNames)" -ForegroundColor Cyan
-        } else {
-            Write-Host ""
-        }
-    }
-    
-    # Docker Images status - one line
-    if ($Status.DockerImages -and $Status.DockerImages.Count -gt 0) {
-        $imgToPull = ($Status.DockerImages | Where-Object { -not $_.Installed }).Count
-        $imgInstalled = ($Status.DockerImages | Where-Object { $_.Installed }).Count
-        $imgColor = if ($imgToPull -gt 0) { 'Yellow' } else { 'Green' }
-        Write-Host "🐳 Docker Images: $imgInstalled/$($Status.DockerImages.Count) present" -ForegroundColor $imgColor -NoNewline
-        if ($imgToPull -gt 0) {
-            $imgNames = ($Status.DockerImages | Where-Object { -not $_.Installed } | ForEach-Object { $_.Name }) -join ", "
-            Write-Host " (to pull: $imgNames)" -ForegroundColor Cyan
         } else {
             Write-Host ""
         }
@@ -1514,39 +1445,6 @@ if ((Test-Path `$ohMyPoshExe) -and (Test-Path `$themePath)) {
         }
     }
 
-    # --- Docker Images ---
-    if ($Configuration.dockerImages -and $Configuration.dockerImages.Count -gt 0) {
-        Write-Host "`n=== Docker Images ===" -ForegroundColor Cyan
-        
-        $dockerAvailable = Get-Command docker -ErrorAction SilentlyContinue
-        if ($dockerAvailable) {
-            foreach ($img in $Configuration.dockerImages) {
-                $tag = if ($img.tag) { $img.tag } else { "latest" }
-                $fullImage = "$($img.image):$tag"
-                
-                $imgStatus = $PreFlightStatus.DockerImages | Where-Object { $_.FullImage -eq $fullImage }
-                
-                if ($imgStatus -and $imgStatus.Installed) {
-                    Write-Host " • $($img.name) already present" -ForegroundColor Gray
-                } else {
-                    if ($IsDryRun) {
-                        Write-Host " • [DRY RUN] Would pull $fullImage" -ForegroundColor Cyan
-                    } else {
-                        Write-Host " • Pulling $($img.name) ($fullImage)..." -ForegroundColor Green
-                        $pullResult = docker pull $fullImage 2>&1
-                        if ($LASTEXITCODE -eq 0) {
-                            Write-Host "   ✓ Pulled successfully" -ForegroundColor Green
-                        } else {
-                            Write-Host "   ✗ Pull failed" -ForegroundColor Red
-                        }
-                    }
-                }
-            }
-        } else {
-            Write-Host " ! Docker is not available. Install Docker Desktop first." -ForegroundColor Yellow
-        }
-    }
-
     # --- Dotnet Tools ---
     if ($Configuration.dotnetTools -and $Configuration.dotnetTools.Count -gt 0) {
         Write-Host "`n=== Dotnet Tools ===" -ForegroundColor Cyan
@@ -1943,15 +1841,6 @@ public class Wallpaper {
             $PreFlightStatus.NerdFont.Installed = $true
             $PreFlightStatus.NerdFont.Action = "Skip"
         }
-        # Update Docker images that were pulled
-        if ($PreFlightStatus.DockerImages) {
-            foreach ($img in $PreFlightStatus.DockerImages) {
-                if ($img.Action -eq "Pull") {
-                    $img.Installed = $true
-                    $img.Action = "Skip"
-                }
-            }
-        }
         # Update Backups that were configured
         if ($PreFlightStatus.Backups) {
             foreach ($backup in $PreFlightStatus.Backups) {
@@ -1994,33 +1883,6 @@ if (-not $NoCache -and (Test-CacheValid)) {
                 }
                 Write-Host $(if ($isInstalled) { " ✓ installed" } else { " needs install" }) -ForegroundColor $(if ($isInstalled) { 'Green' } else { 'Yellow' })
                 $newTools += $tool.name
-            }
-        }
-        
-        # Check for new Docker images
-        if ($config.dockerImages) {
-            foreach ($img in $config.dockerImages) {
-                $tag = if ($img.tag) { $img.tag } else { "latest" }
-                $fullImage = "$($img.image):$tag"
-                $cached = $preFlightStatus.DockerImages | Where-Object { $_.FullImage -eq $fullImage }
-                if (-not $cached) {
-                    Write-Host "🔍 Checking new Docker image: $($img.name)..." -ForegroundColor Cyan -NoNewline
-                    $dockerAvailable = Get-Command docker -ErrorAction SilentlyContinue
-                    $isPresent = $false
-                    if ($dockerAvailable) {
-                        $existingImages = docker images --format "{{.Repository}}:{{.Tag}}" 2>$null
-                        $isPresent = $existingImages -contains $fullImage
-                    }
-                    $preFlightStatus.DockerImages += [PSCustomObject]@{
-                        Name = $img.name
-                        Image = $img.image
-                        Tag = $tag
-                        FullImage = $fullImage
-                        Installed = $isPresent
-                        Action = if ($isPresent) { "Skip" } else { "Pull" }
-                    }
-                    Write-Host $(if ($isPresent) { " ✓ present" } else { " needs pull" }) -ForegroundColor $(if ($isPresent) { 'Green' } else { 'Yellow' })
-                }
             }
         }
         

@@ -205,13 +205,6 @@
       "url": "https://addons.mozilla.org/firefox/downloads/latest/privacy-badger17/latest.xpi"
     }
   ],
-  "dockerImages": [
-    {
-      "image": "mcr.microsoft.com/mssql/server",
-      "tag": "2022-latest",
-      "name": "SQL Server 2022"
-    }
-  ],
   "backups": [
     {
       "enabled": true,

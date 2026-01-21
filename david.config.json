@@ -87,6 +87,11 @@
       "category": "LANGUAGES & RUNTIMES"
     },
     {
+      "id": "Microsoft.NuGet",
+      "name": "NuGet",
+      "category": "LANGUAGES & RUNTIMES"
+    },
+    {
       "id": "Ollama.Ollama",
       "name": "Ollama",
       "category": "AI & ML"
@@ -221,6 +226,11 @@
       "id": "9NKSQGP7F2NH",
       "name": "WhatsApp",
       "category": "COMMUNICATION"
+    },
+    {
+      "id": "Citrix.Workspace",
+      "name": "Citrix Workspace",
+      "category": "UTILITIES"
     }
   ],
   "blockedTools": [
@@ -260,13 +270,6 @@
       "id": "keepassxc-browser@keepassxc.org",
       "name": "KeePassXC-Browser",
       "url": "https://addons.mozilla.org/firefox/downloads/latest/keepassxc-browser/latest.xpi"
-    }
-  ],
-  "dockerImages": [
-    {
-      "image": "rabbitmq",
-      "tag": "3-management",
-      "name": "RabbitMQ with Management UI"
     }
   ],
   "backups": [
