@@ -198,6 +198,21 @@
       "category": "UTILITIES"
     },
     {
+      "id": "Ocenaudio.Ocenaudio",
+      "name": "Ocenaudio",
+      "category": "AUDIO"
+    },
+    {
+      "id": "Audacity.Audacity",
+      "name": "Audacity",
+      "category": "AUDIO"
+    },
+    {
+      "id": "Cockos.REAPER",
+      "name": "REAPER",
+      "category": "AUDIO"
+    },
+    {
       "id": "Valve.Steam",
       "name": "Steam",
       "category": "GAMING"
