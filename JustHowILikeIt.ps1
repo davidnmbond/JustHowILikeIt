@@ -1196,8 +1196,9 @@ function Install-Tools {
             $profileContent = if (Test-Path $PROFILE) { Get-Content $PROFILE -Raw -ErrorAction SilentlyContinue } else { "" }
             if (-not $profileContent) { $profileContent = "" }
             
-            # Check if profile already has correct oh-my-posh config
-            $hasCorrectConfig = $profileContent -match 'oh-my-posh.*init pwsh.*--config.*Programs.*oh-my-posh'
+            # Check if profile already has correct oh-my-posh config (supports both direct call and variable-based call)
+            $hasCorrectConfig = $profileContent -match 'oh-my-posh.*init pwsh.*--config.*Programs.*oh-my-posh' -or
+                                $profileContent -match '\$ohMyPoshExe.*init pwsh.*--config.*\$themePath'
             
             if (-not $hasCorrectConfig) {
                 if ($IsDryRun) {

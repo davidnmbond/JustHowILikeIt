@@ -188,9 +188,14 @@
       "category": "UTILITIES"
     },
     {
-      "id": "PostgreSQL.pgAdmin",
-      "name": "pgAdmin 4",
-      "category": "DATABASES"
+      "id": "VideoLAN.VLC",
+      "name": "VLC media player",
+      "category": "UTILITIES"
+    },
+    {
+      "id": "Inkscape.Inkscape",
+      "name": "Inkscape",
+      "category": "UTILITIES"
     },
     {
       "id": "Valve.Steam",
